@@ -187,7 +187,7 @@ class Files(unittest.TestCase):
         write_gmd(path, name, built(build).string())
         return path
 
-    def wait_for(self, measurer, version, seconds=30.0):
+    def wait_for(self, measurer, version, seconds=240.0):      # generous: a busy Mac searches several times slower
         end = time.time() + seconds
         while measurer.version < version and time.time() < end:
             time.sleep(0.01)

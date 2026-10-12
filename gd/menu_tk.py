@@ -12,12 +12,13 @@ import shutil
 import subprocess
 import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 
-from . import icons, paths, ui
+from . import icons, paths, share, ui
 from .level import Level
 from .levelio import LevelFormatError, load_level_file, write_gmd
 from .macros import MacroFormatError, load_macro
+from .paths import safe_stem, unique_path
 from .progress import Progress, level_key
 from .render_tk import GameView
 from .sim import Simulation
@@ -102,14 +103,48 @@ def my_levels():
     return out
 
 
-def unique_path(folder, stem, ext=".gmd"):
-    stem = "".join(c if c.isalnum() or c in " -_" else "_" for c in stem).strip() or "level"
-    path = os.path.join(folder, stem + ext)
-    n = 2
-    while os.path.exists(path):
-        path = os.path.join(folder, "%s %d%s" % (stem, n, ext))
-        n += 1
-    return path
+def tidy_level_files(progress=None, timings=None):
+    """Name every file in the player's levels folder (and its trash) after the level in it,
+    so the folder shows the same names as the game: a level called "Sky High" lives in
+    "Sky High.gmd".  A level takes its first file name from whatever it was called when it
+    was first saved - usually "New level" - and renaming the level used to leave the file
+    behind.  Nothing is ever overwritten (a taken name gets " 2", " 3", ...), and the
+    level's progress and measured timing move with it.  Returns [(old path, new path)]."""
+    moved = []
+    for folder in (LEVELS, os.path.join(LEVELS, "trash")):
+        try:
+            names = sorted(os.listdir(folder), key=str.lower)
+        except OSError:
+            continue
+        for name in names:
+            old = os.path.join(folder, name)
+            stem, ext = os.path.splitext(name)
+            if ext.lower() not in LEVEL_EXTENSIONS or not os.path.isfile(old):
+                continue
+            try:
+                title = load_level_file(old).name
+            except (LevelFormatError, OSError, ValueError):
+                continue                                   # not readable: leave it alone
+            if not title or title in ("New level", "Unnamed"):
+                continue                                   # never named: the file name is its name
+            want = safe_stem(title)
+            if stem == want or (stem.startswith(want + " ") and stem[len(want) + 1:].isdigit()):
+                continue
+            new = unique_path(folder, want, ext)
+            try:
+                os.rename(old, new)
+            except OSError:
+                continue
+            moved.append((old, new))
+            if progress is not None:
+                progress.rename(level_key(os.path.join(LEVELS, name)), level_key(os.path.join(LEVELS, os.path.basename(new))))
+            if timings is not None and folder == LEVELS:
+                timings.rename(old, new)
+    if moved:
+        _info_cache.clear()
+        if progress is not None:
+            progress.save()
+    return moved
 
 
 # ------------------------------------------------------------------ screens
@@ -143,8 +178,14 @@ class Home(Screen):
         ui.Button(cv, w / 2 - 150, y, 300, 72, "PLAY", app.show_levels, "primary", 26, "Enter", radius=16)
         ui.Button(cv, w / 2 - 232, y + 92, 224, 56, "My Levels", app.show_mine, "normal", 16, "M")
         ui.Button(cv, w / 2 + 8, y + 92, 224, 56, "Level Editor", app.new_level, "normal", 16, "E")
-        ui.Button(cv, w / 2 - 232, y + 162, 224, 44, "Progress", app.show_stats, "quiet", 14, "S")
-        ui.Button(cv, w / 2 + 8, y + 162, 224, 44, "Quit", app.quit, "quiet", 14, "Q")
+        ui.Button(cv, w / 2 - 232, y + 162, 224, 44, "Share on Wi-Fi", app.show_share, "normal", 14, "W")
+        ui.Button(cv, w / 2 + 8, y + 162, 224, 44, "Progress", app.show_stats, "quiet", 14, "S")
+        ui.Button(cv, w / 2 - 112, y + 218, 224, 38, "Quit", app.quit, "quiet", 13, "Q")
+        if app.session is not None:                           # never let an open room be forgotten
+            room = app.session
+            cv.create_text(w / 2, 26, fill=ui.CYAN, font=ui.font(13, True),
+                           text=("Your room is open  -  code %s" % room.code) if room.role == "host"
+                           else "You are in %s" % room.room)
         pack = [e for e in pack_levels() if e["difficulty"] != "test"]
         t = app.progress.totals([level_key(e["path"]) for e in pack])
         everything = app.progress.totals()
@@ -155,7 +196,7 @@ class Home(Screen):
     def key(self, k):
         app = self.app
         {"return": app.show_levels, "space": app.show_levels, "m": app.show_mine, "e": app.new_level,
-         "s": app.show_stats, "q": app.quit, "escape": app.quit}.get(k, lambda: None)()
+         "s": app.show_stats, "w": app.show_share, "q": app.quit, "escape": app.quit}.get(k, lambda: None)()
 
 
 class LevelSelect(Screen):
@@ -415,6 +456,223 @@ class MyLevels(Screen):
             self.delete(path)
 
 
+class Share(Screen):
+    """Share levels with players on the same Wi-Fi.
+
+    Two states.  Outside a room: "Host a room" on the left, the rooms found on the
+    network on the right.  Inside a room: the code and who is here on top, your levels to
+    SEND on the left, the levels shared in the room to RECEIVE on the right.  All the
+    networking is in gd/share.py; this only draws it and passes on the clicks."""
+
+    def __init__(self, app):
+        Screen.__init__(self, app)
+        self.send_page = self.shelf_page = 0
+        self.name = tk.StringVar(value=share.load_name())
+        self.entry = tk.Entry(app.cv, textvariable=self.name, relief="flat", bg="#0A0D15", fg=ui.TEXT,
+                              insertbackground=ui.TEXT, font=ui.font(15), highlightthickness=1,
+                              highlightbackground=ui.LINE, highlightcolor=ui.CYAN)
+        for key in ("<Return>", "<Escape>"):
+            self.entry.bind(key, lambda e: app.cv.focus_set())
+        app.look_for_rooms(app.session is None)
+
+    def close(self):
+        """Called when the menu moves to another screen.  A room stays open; the search stops."""
+        share.save_name(self.name.get())
+        self.entry.destroy()
+        self.app.look_for_rooms(False)
+
+    def my_name(self):
+        return share.clean(self.name.get(), share.NAME_LIMIT) or share.default_name()
+
+    # ------------------------------------------------------------------ drawing
+    def draw(self, cv, w, h):
+        if self.app.session is None:
+            self._draw_lobby(cv, w, h)
+        else:
+            self._draw_room(cv, w, h, self.app.session)
+
+    @staticmethod
+    def _card(cv, x0, y0, x1, y1, caption, title):
+        ui.rounded(cv, x0, y0, x1, y1, 16, fill=ui.PANEL, outline="")
+        cv.create_text(x0 + 24, y0 + 26, anchor="w", text=caption, fill=ui.CYAN, font=ui.font(11, True))
+        cv.create_text(x0 + 24, y0 + 54, anchor="w", text=title, fill=ui.TEXT, font=ui.font(19, True))
+
+    def _draw_lobby(self, cv, w, h):
+        app = self.app
+        self.header(cv, w, "Share on Wi-Fi")
+        cv.create_text(24, 92, anchor="w", text="Your name", fill=ui.MUTED, font=ui.font(13))
+        cv.create_window(104, 92, window=self.entry, anchor="w", width=220, height=32)
+        cv.create_text(338, 92, anchor="w", text="This is what the other players see.", fill=ui.MUTED, font=ui.font(12))
+        if app.share_note:                                    # why the last room ended
+            cv.create_text(w - 24, 92, anchor="e", text=app.share_note, fill=ui.YELLOW, font=ui.font(13, True))
+        top, bottom, mid = 122, h - 84, w / 2.0
+
+        # --- host
+        x0, x1 = 24, mid - 8
+        self._card(cv, x0, top, x1, bottom, "HOST A ROOM", "Open a room for your friends")
+        steps = ("1.   Press Start hosting.",
+                 "2.   A 4-digit code appears. Tell it to your friends.",
+                 "3.   They choose your room on their screen and type the code.",
+                 "4.   Everyone can then send levels and pick up the ones they want.")
+        for i, text in enumerate(steps):
+            cv.create_text(x0 + 24, top + 100 + i * 30, anchor="w", text=ui.fit(text, ui.font(14), x1 - x0 - 48),
+                           fill=ui.TEXT, font=ui.font(14))
+        ui.Button(cv, x0 + 24, top + 100 + len(steps) * 30 + 16, 240, 56, "Start hosting", self.host, "primary", 18,
+                  "H", radius=14)
+
+        # --- join
+        x0, x1 = mid + 8, w - 24
+        self._card(cv, x0, top, x1, bottom, "JOIN A ROOM", "Rooms on this Wi-Fi")
+        finder = app.finder
+        rooms = list(finder.rooms) if finder is not None else []
+        y = top + 86
+        for room in rooms[:max(1, int((bottom - y - 70) // 62))]:
+            ui.rounded(cv, x0 + 16, y, x1 - 16, y + 54, 12, fill=ui.PANEL_HI, outline="")
+            cv.create_text(x0 + 32, y + 18, anchor="w", fill=ui.TEXT, font=ui.font(15, True),
+                           text=ui.fit(room["room"], ui.font(15, True), x1 - x0 - 190))
+            cv.create_text(x0 + 32, y + 39, anchor="w", fill=ui.MUTED, font=ui.font(11),
+                           text="%d %s      %s" % (room["people"], "person" if room["people"] == 1 else "people",
+                                                    room["address"]))
+            ui.Button(cv, x1 - 126, y + 8, 98, 38, "Join", lambda r=room: self.join(r["address"], r["port"]),
+                      "accent", 14, radius=10)
+            y += 62
+        if not rooms:
+            looking = finder is None or not finder.searched
+            cv.create_text(x0 + 24, y + 14, anchor="w", fill=ui.MUTED, font=ui.font(14),
+                           text="Looking for rooms..." if looking else "No room found yet.")
+            if not looking:
+                cv.create_text(x0 + 24, y + 42, anchor="w", fill=ui.MUTED, font=ui.font(12),
+                               text=ui.fit("Ask the host to press Start hosting. The list updates by itself.",
+                                           ui.font(12), x1 - x0 - 48))
+        ui.Button(cv, x0 + 24, bottom - 54, 270, 36, "Type the host's address instead", self.join_by_address,
+                  "normal", 12, radius=10)
+
+        for i, text in enumerate((
+                "Use this only on a network you trust, such as your home Wi-Fi: levels are sent without encryption.",
+                "If macOS asks whether GD Remake may accept incoming connections or find devices on your local "
+                "network, choose Allow.")):
+            cv.create_text(24, h - 58 + i * 22, anchor="w", fill=ui.MUTED, font=ui.font(12),
+                           text=ui.fit(text, ui.font(12), w - 48))
+
+    def _pager(self, cv, x1, y, name, count, rows):
+        """Small previous / next buttons at the top right of a list that does not fit."""
+        pages = max(1, (count - 1) // rows + 1)
+        page = max(0, min(getattr(self, name), pages - 1))
+        setattr(self, name, page)
+        if pages > 1:
+            def turn(step):
+                setattr(self, name, page + step)
+                self.app.redraw()
+            ui.Button(cv, x1 - 100, y, 36, 30, "<", lambda: turn(-1), "quiet", 13, enabled=page > 0, radius=8)
+            cv.create_text(x1 - 50, y + 15, text="%d / %d" % (page + 1, pages), fill=ui.MUTED, font=ui.font(11))
+            ui.Button(cv, x1 - 36, y, 36, 30, ">", lambda: turn(1), "quiet", 13, enabled=page < pages - 1, radius=8)
+        return page
+
+    def _draw_room(self, cv, w, h, session):
+        app = self.app
+        state = session.snapshot()
+        hosting = session.role == "host"
+        self.header(cv, w, session.room)
+        ui.Button(cv, w - 204, 18, 180, 38, "Stop hosting" if hosting else "Leave room", app.leave_room, "danger", 13)
+
+        # --- the room: code, address, who is here
+        ui.rounded(cv, 24, 70, w - 24, 150, 16, fill=ui.PANEL, outline="")
+        x = 48
+        if hosting:
+            cv.create_text(x, 92, anchor="w", text="ROOM CODE", fill=ui.CYAN, font=ui.font(11, True))
+            cv.create_text(x, 124, anchor="w", text="  ".join(session.code), fill=ui.TEXT, font=ui.font(30, True))
+            cv.create_text(x + 190, 92, anchor="w", text="ADDRESS", fill=ui.MUTED, font=ui.font(11, True))
+            cv.create_text(x + 190, 120, anchor="w", text=session.address, fill=ui.TEXT, font=ui.font(17, True))
+            cv.create_text(x + 190, 139, anchor="w", text="only needed if a friend cannot see the room",
+                           fill=ui.MUTED, font=ui.font(10))
+            x += 470
+        people = state["people"]
+        names = ["%s%s" % (name, " (host)" if i == 0 else "") + (" - you" if name == session.me else "")
+                 for i, name in enumerate(people)]
+        cv.create_text(x, 92, anchor="w", text="IN THE ROOM  (%d)" % len(people), fill=ui.CYAN if not hosting else ui.MUTED,
+                       font=ui.font(11, True))
+        cv.create_text(x, 122, anchor="w", fill=ui.TEXT, font=ui.font(14),
+                       text=ui.fit("     ".join(names), ui.font(14), w - 48 - x))
+
+        top, bottom, mid = 164, h - 56, w / 2.0
+        rows = max(2, int((bottom - top - 78) // 56))
+
+        # --- send
+        x0, x1 = 24, mid - 8
+        self._card(cv, x0, top, x1, bottom, "SEND", "Your levels")
+        mine = my_levels()
+        page = self._pager(cv, x1 - 16, top + 38, "send_page", len(mine), rows)
+        y = top + 82
+        for path in mine[page * rows:(page + 1) * rows]:
+            info = level_info(path)
+            if info is None:
+                continue
+            ui.rounded(cv, x0 + 16, y, x1 - 16, y + 48, 12, fill=ui.PANEL_HI, outline="")
+            cv.create_text(x0 + 32, y + 24, anchor="w", fill=ui.TEXT, font=ui.font(14, True),
+                           text=ui.fit(info["name"], ui.font(14, True), x1 - x0 - 200))
+            if path in app.shared:
+                cv.create_text(x1 - 34, y + 24, anchor="e", text="Shared", fill=ui.GREEN, font=ui.font(13, True))
+            else:
+                ui.Button(cv, x1 - 138, y + 6, 110, 36, "Share", lambda p=path: app.share_level(p), "primary", 13,
+                          radius=10)
+            y += 56
+        if not mine:
+            cv.create_text(x0 + 24, y + 10, anchor="w", fill=ui.MUTED, font=ui.font(13),
+                           text="You have no levels of your own yet. Build one in the Level Editor.")
+
+        # --- receive
+        x0, x1 = mid + 8, w - 24
+        self._card(cv, x0, top, x1, bottom, "RECEIVE", "Shared in this room")
+        shelf = state["shelf"]
+        page = self._pager(cv, x1 - 16, top + 38, "shelf_page", len(shelf), rows)
+        y = top + 82
+        for item in shelf[page * rows:(page + 1) * rows]:
+            ui.rounded(cv, x0 + 16, y, x1 - 16, y + 48, 12, fill=ui.PANEL_HI, outline="")
+            cv.create_text(x0 + 32, y + 16, anchor="w", fill=ui.TEXT, font=ui.font(14, True),
+                           text=ui.fit(item["title"], ui.font(14, True), x1 - x0 - 250))
+            own = item["from"] == session.me
+            cv.create_text(x0 + 32, y + 35, anchor="w", fill=ui.MUTED, font=ui.font(11),
+                           text="from %s      %d objects" % ("you" if own else item["from"], item["objects"]))
+            if own:
+                cv.create_text(x1 - 34, y + 24, anchor="e", text="yours", fill=ui.MUTED, font=ui.font(13))
+            elif item["id"] in app.saved:
+                cv.create_text(x1 - 34, y + 24, anchor="e", text="Saved to My Levels", fill=ui.GREEN,
+                               font=ui.font(13, True))
+            elif item["id"] in state["waiting"]:
+                cv.create_text(x1 - 34, y + 24, anchor="e", text="Getting it...", fill=ui.MUTED, font=ui.font(13))
+            else:
+                ui.Button(cv, x1 - 188, y + 6, 160, 36, "Save to My Levels", lambda i=item["id"]: app.take_level(i),
+                          "accent", 13, radius=10)
+            y += 56
+        if not shelf:
+            cv.create_text(x0 + 24, y + 10, anchor="w", fill=ui.MUTED, font=ui.font(13),
+                           text=ui.fit("Nothing has been shared yet. Levels appear here when someone presses Share.",
+                                       ui.font(13), x1 - x0 - 48))
+
+        if state["messages"]:
+            cv.create_text(24, h - 28, anchor="w", fill=ui.MUTED, font=ui.font(13),
+                           text=ui.fit(state["messages"][-1], ui.font(13), w - 48))
+
+    # ------------------------------------------------------------------ actions
+    def host(self):
+        self.app.host_room(self.my_name())
+
+    def join(self, address, port):
+        self.app.join_room(self.my_name(), address, port)
+
+    def join_by_address(self):
+        address = simpledialog.askstring("Host's address", "Type the address on the host's screen\n"
+                                         "(four numbers, for example 192.168.1.23):", parent=self.app.root)
+        if address:
+            self.join(address.strip(), share.PORT)
+
+    def key(self, k):
+        if k == "escape":
+            self.app.home()
+        elif k == "h" and self.app.session is None:
+            self.host()
+
+
 class Stats(Screen):
     def reset(self):
         if messagebox.askyesno("Reset progress", "Erase all saved progress for every level?"):
@@ -483,6 +741,12 @@ class App:
         self._timing_seen = 0
         self.game = None
         self.editor = None
+        self.session = None                           # the sharing room this player hosts or is in
+        self.finder = None                            # looks for rooms while the list is on screen
+        self.shared, self.saved = set(), {}           # my level files sent / shelf items saved, this room
+        self.share_note = ""                          # why the last room ended
+        self._share_seen = None
+        self.tidy_levels()                            # level files are named after their levels
         self.quit_after_game = False
         self.remember_index = 0
         self.screen = Home(self)
@@ -522,7 +786,107 @@ class App:
                     self.redraw()
         else:
             self.timing.pause()
+        self._share_tick()
         self.root.after(TIMING_POLL_MS, self._timing_tick)
+
+    # -- sharing over the local network (the networking itself is gd/share.py)
+    def _share_tick(self):
+        """Background threads run the room; the window collects what they have for it."""
+        session = self.session
+        if session is not None:
+            for item_id, title, text in session.take_inbox():     # only levels this player asked for
+                try:
+                    self.saved[item_id] = share.save_level(LEVELS, title, text)
+                    session.note('Saved "%s" to My Levels.' % title)
+                    _info_cache.clear()
+                except (share.ShareError, OSError) as exc:
+                    session.note('Could not save "%s": %s' % (title, getattr(exc, "strerror", None) or exc))
+            if not session.running:                               # the host closed it, or the Wi-Fi dropped
+                self._end_session(session.ended)
+        seen = (id(self.session), self.session.version if self.session else 0,
+                self.finder.version if self.finder else 0)
+        if seen != self._share_seen:
+            self._share_seen = seen
+            if isinstance(self.screen, (Share, Home)) and self.game is None and self.editor is None:
+                self.redraw()
+
+    def _end_session(self, why=""):
+        if self.session is not None:
+            self.session.leave()
+        self.session, self.share_note = None, why
+        self.shared, self.saved = set(), {}
+        self.look_for_rooms(isinstance(self.screen, Share))
+
+    def look_for_rooms(self, on):
+        if on and self.finder is None:
+            self.finder = share.Finder()
+        elif not on and self.finder is not None:
+            self.finder.stop()
+            self.finder = None
+
+    def show_share(self):
+        self._set(Share(self))
+
+    def host_room(self, name):
+        if self.session is not None:
+            return
+        share.save_name(name)
+        try:
+            self.session = share.Room(name).start()
+        except share.ShareError as exc:
+            messagebox.showerror("Cannot host a room", str(exc))
+            return
+        self.share_note = ""
+        self.look_for_rooms(False)
+        self.redraw()
+
+    def join_room(self, name, address, port):
+        if self.session is not None:
+            return
+        code = simpledialog.askstring("Room code", "Type the 4-digit code on the host's screen:", parent=self.root)
+        if not code:
+            return
+        share.save_name(name)
+        try:
+            self.session = share.Guest(name).join(address, port, code.strip(), timeout=4.0)
+        except share.ShareError as exc:
+            messagebox.showerror("Cannot join", str(exc))
+            return
+        self.share_note = ""
+        self.look_for_rooms(False)
+        self.redraw()
+
+    def leave_room(self):
+        if self.session is None:
+            return
+        hosting = self.session.role == "host"
+        others = len(self.session.snapshot()["people"]) - 1
+        if hosting and others > 0 and not messagebox.askyesno(
+                "Stop hosting", "Close the room? %d other player%s will be disconnected."
+                % (others, "" if others == 1 else "s")):
+            return
+        self._end_session("")
+        self.redraw()
+
+    def share_level(self, path):
+        if self.session is None:
+            return
+        try:
+            title, text = share.read_level(path)
+            self.session.share(title, text)
+            self.shared.add(path)
+        except (share.ShareError, LevelFormatError, OSError) as exc:
+            messagebox.showerror("Cannot share this level", str(exc))
+        self.redraw()
+
+    def take_level(self, item_id):
+        if self.session is None:
+            return
+        try:
+            self.session.request(item_id)
+        except share.ShareError as exc:
+            messagebox.showerror("Cannot get this level", str(exc))
+        self.redraw()
 
     def _callback_error(self, kind, value, trace):
         """Inside the app: keep the latest error where the player can find it, and go on."""
@@ -543,6 +907,8 @@ class App:
     def _set(self, screen):
         if isinstance(self.screen, LevelSelect):
             self.remember_index = self.screen.index
+        if hasattr(self.screen, "close"):
+            self.screen.close()
         self.screen = screen
         self.redraw()
 
@@ -560,7 +926,13 @@ class App:
         self._set(LevelSelect(self, self.remember_index))
 
     def show_mine(self):
+        self.tidy_levels()
         self._set(MyLevels(self))
+
+    def tidy_levels(self):
+        """Keep the files in the levels folder named after their levels (never while one is open)."""
+        if self.game is None and self.editor is None:
+            tidy_level_files(self.progress, self.timing.timings)
 
     def show_stats(self):
         self._set(Stats(self))
@@ -576,6 +948,11 @@ class App:
         if self.editor is not None and not self.editor.flush():
             return
         self.timing.stop()
+        self.look_for_rooms(False)
+        if self.session is not None:
+            self.session.leave()                      # tells the others, closes the room
+        if hasattr(self.screen, "close"):
+            self.screen.close()
         self.root.destroy()
 
     # -- playing
@@ -646,6 +1023,7 @@ class App:
         self.editor = None
         self.root.minsize(*MENU_MIN)
         _info_cache.clear()                           # levels may have been added or changed
+        self.tidy_levels()                            # ... or renamed: the file takes the new name
         self.screen = MyLevels(self)
         self._show_menu()
 

@@ -8,8 +8,52 @@ easy to very hard, a hitbox viewer and a test suite.
   `tkinter`, which ships with Python.
 - **macOS app:** a self-contained `GD Remake.app` (nothing to install, not even Python)
   is on the Releases page; `python3 tools/build_app.py` builds it.
+- **Sharing:** players on the same Wi-Fi can pass levels to each other from inside the
+  game ("Share on Wi-Fi") - see below.
 - **Reference version:** GD 2.2 (the decompilations used target 2.2 / 2.2081).
 - **Tick rate:** 240 steps per second, the rate the game itself uses.
+
+## Sharing levels on Wi-Fi
+
+**Share on Wi-Fi** on the home screen lets players on the same network pass levels to
+each other, inside the game - no accounts, no internet, no extra software.
+
+1. One player presses **Start hosting**. The screen shows a 4-digit **room code**.
+2. The others open Share on Wi-Fi; the room appears under "Rooms on this Wi-Fi". They
+   press **Join** and type the code. (If a network hides the room, "Type the host's
+   address instead" takes the address shown on the host's screen.)
+3. Everyone now sees the same two lists. **Send - your levels**: press Share next to a
+   level and it appears on the room's shelf for everybody. **Receive - shared in this
+   room**: press **Save to My Levels** next to a level you want; it lands in
+   `Documents/GD Remake/levels` as a new file and shows up under My Levels.
+4. The host presses **Stop hosting** (or quits the game) and the room is gone. While a
+   room is open, the home screen says so.
+
+What keeps it safe, and what does not:
+
+- **Local network only.** Connections from addresses that are not on a private network
+  (192.168.x.x, 10.x.x.x, 172.16-31.x.x, link-local, this computer) are dropped unheard.
+- **The code.** A device on the same Wi-Fi cannot enter a room without the code on the
+  host's screen. Five wrong codes from one address lock it out. The code is never sent
+  to anyone looking for rooms.
+- **Nothing arrives uninvited.** A level is only transferred to you when you press Save;
+  a level nobody asked for is thrown away on arrival.
+- **Only level text travels** - the level's decoded string and its name, never a file,
+  a path or anything compressed. The receiving game checks the size, runs the text
+  through its own level parser and then writes a fresh `.gmd` itself, under a name it
+  chooses, never over an existing file and never outside your levels folder. Nothing
+  received is executed.
+- Limits on everything: 12 players in a room, 40 levels on the shelf, 8 MB per level.
+- **Not encrypted.** Anyone able to listen in on the network could read the levels and
+  the code. Use it on a network you trust (home, a friend's house), not on public Wi-Fi.
+- macOS may ask whether GD Remake may accept incoming connections (the firewall) or
+  find devices on your local network; both need **Allow** for sharing to work. Some
+  school and guest networks block devices from talking to each other altogether - then
+  no room can be found or joined, and nothing in the game can change that.
+
+I could test this only on one computer (several players on one Mac, talking over its
+own network address) and with automated tests that send it malformed and oversized
+messages; it has not been tried between two real computers yet.
 
 ## Where your files are
 
@@ -17,8 +61,13 @@ Everything the game writes goes into one folder, **Documents/GD Remake**:
 
 | Folder | What is in it |
 |---|---|
-| `Documents/GD Remake/levels/` | the levels you build or import - one `.gmd` file each (deleted ones are moved to `levels/trash/`) |
+| `Documents/GD Remake/levels/` | the levels you build or import - one `.gmd` file each, **named after the level** (deleted ones are moved to `levels/trash/`) |
 | `Documents/GD Remake/savedata/` | `progress.json`, `timing.json` (the "tightest jump" numbers) and `backups/` from the editor |
+
+A file always carries its level's name: rename a level in the editor and its file is
+renamed when you close the editor ("Sky High" lives in `Sky High.gmd`; a second level with
+the same name becomes `Sky High 2.gmd`). The level's progress and measured timing move
+with it. A level you never named keeps whatever its file is called.
 
 The 13 built-in levels are part of the program (`levels/` in this repository, or inside
 the app) and are never modified. My Levels has a **Show in Finder** button for your
@@ -372,6 +421,7 @@ gd/editor_tk.py      the editor screen
 gd/autoplay.py       brute-force solver (depth-first, snapshot/restore)
 gd/analysis.py       difficulty rating and timing-window analysis
 gd/timing.py         "tightest jump" for My Levels: measurement, cache, background worker
+gd/share.py          sharing levels on the local network: rooms, the code, checks, discovery (no window code)
 tools/make_test_level.py   builds levels/test_level.gmd (+ .gdr2 / .json replay)
 tools/make_level_pack.py   builds and rates the 13-level pack
 tools/canvas_svg.py        dumps a Tk canvas to SVG (used to look at screens while building them)

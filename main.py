@@ -163,7 +163,8 @@ def where():
         print("tkinter        NOT AVAILABLE: %s" % exc)
         return 1
     # everything the game imports while running, plus what the importers and the bot need
-    for name in ("gd.menu_tk", "gd.editor_tk", "gd.timing", "gd.macros", "gd.levelio", "hashlib", "zipfile",
+    for name in ("gd.menu_tk", "gd.editor_tk", "gd.timing", "gd.share", "gd.macros", "gd.levelio", "hashlib", "zipfile",
+                 "socket", "ipaddress", "secrets", "tkinter.simpledialog",
                  "gzip", "zlib", "json", "csv", "threading", "subprocess", "tkinter.filedialog",
                  "tkinter.messagebox", "tkinter.font"):
         importlib.import_module(name)
@@ -171,6 +172,34 @@ def where():
     hashlib.sha1(b"x").hexdigest(), hashlib.md5(b"x").hexdigest(), hashlib.sha256(b"x").hexdigest()
     if not os.environ.get("GD_REMAKE_APP"):
         return 0
+    # the build script's check: the window itself must come up, draw its menus and close
+    from gd.menu_tk import App
+    window = App()
+    for show in (window.redraw, window.show_levels, window.show_mine, window.show_stats):
+        show()
+        window.root.update()
+    window.quit()
+    print("window         opened, drew every menu screen and closed")
+    # ... and sharing must work with the app's own networking modules (this computer only)
+    import time
+    from gd import share
+    from gd.level import LevelBuilder
+    room = share.Room("check", port=0, discovery_port=0).start()
+    guest = share.Guest("guest").join("127.0.0.1", room.port, room.code)
+    room.share("Check", LevelBuilder().block(3, 0).string())
+    deadline = time.time() + 10
+    while time.time() < deadline and not guest.shelf:
+        time.sleep(0.02)
+    if guest.shelf:
+        guest.request(guest.shelf[0]["id"])
+    while time.time() < deadline and not guest.inbox:
+        time.sleep(0.02)
+    arrived = bool(guest.inbox) and guest.inbox[0][2] == LevelBuilder().block(3, 0).string()
+    guest.leave()
+    room.leave()
+    print("sharing        %s" % ("a level went from a host to a guest on this computer" if arrived else "FAILED"))
+    if not arrived:
+        return 1
     app = os.path.dirname(os.path.dirname(os.path.dirname(paths.ROOT)))      # .../GD Remake.app
     outside = sorted({getattr(m, "__file__", None) or "" for m in list(sys.modules.values())} - {""})
     outside = [f for f in outside if not paths.inside(f, app)]

@@ -130,6 +130,31 @@ class ProgressFile(Temp):
         self.assertTrue(os.path.isdir(paths.USER_LEVELS) and os.path.isdir(paths.SAVEDATA))
 
 
+class StartUp(unittest.TestCase):
+    """The one test that opens the real window (for a moment): the app must come up, show
+    every menu screen and close again.  It uses the throwaway player folder set at the
+    top of this file."""
+
+    def test_the_app_starts_and_every_menu_screen_draws(self):
+        import tkinter as tk
+        from gd import menu_tk
+        try:
+            app = menu_tk.App()
+        except tk.TclError as exc:
+            self.skipTest("no display: %s" % exc)
+        errors = []
+        app.root.report_callback_exception = lambda *args: errors.append(args[1])
+        try:
+            self.assertEqual(app.home_error, "")
+            for show in (app.redraw, app.show_levels, app.show_mine, app.show_stats, app.home):
+                show()
+                app.root.update()
+            self.assertGreater(len(app.cv.find_all()), 5, "the menu drew something")
+        finally:
+            app.quit()
+        self.assertEqual(errors, [])
+
+
 class Icons(unittest.TestCase):
     def bounds(self, mode):
         xs = [x for _k, pts, _r, _o, _w in icons.ICONS[mode] for x, _ in pts]
@@ -226,9 +251,50 @@ class Catalogue(Temp):
         self.assertEqual([e["name"] for e in pack], ["Pack", "Physics Test"])
         self.assertTrue(pack[0]["replay"].endswith("01_pack.gdr2"))
 
+    def test_files_are_named_after_their_levels(self):
+        from gd.timing import Timings
+        first = self.make("New level.gmd", "Sky High")              # named in the editor after its first save
+        self.make("New_level.gmd", "Wave: Challenge?")              # the name needs cleaning to be a file name
+        self.make("Mine.gmd", "Mine")
+        self.make("Mine 2.gmd", "Mine")                             # a second level with the same name
+        self.make("draft.gmd", "New level")                         # never named: the file name is its name
+        with open(os.path.join(self.levels, "junk.gmd"), "w") as fh:
+            fh.write("not a level")
+        trash = os.path.join(self.levels, "trash")
+        os.makedirs(trash)
+        self.make("old.gmd", "Bug Recreation", folder=trash)
+        progress = Progress(self.save)
+        progress.reached(level_key(first), 55)
+        progress.reached(level_key(os.path.join(self.levels, "old.gmd")), 30)
+        timings = Timings(os.path.join(self.dir, "save", "timing.json"))
+        timings.store(first, timings.digest(first), {"state": "free"})
+
+        moved = self.menu.tidy_level_files(progress, timings)
+        self.assertEqual(sorted(os.path.basename(new) for _old, new in moved),
+                         ["Bug Recreation.gmd", "Sky High.gmd", "Wave_ Challenge_.gmd"])
+        self.assertEqual(sorted(os.listdir(self.levels)), ["Mine 2.gmd", "Mine.gmd", "Sky High.gmd",
+                                                           "Wave_ Challenge_.gmd", "draft.gmd", "junk.gmd", "trash"])
+        self.assertEqual(os.listdir(trash), ["Bug Recreation.gmd"])
+        renamed = os.path.join(self.levels, "Sky High.gmd")
+        self.assertEqual(progress.get(level_key(renamed))["best"], 55.0, "progress follows the file")
+        self.assertNotIn(level_key(first), progress.levels)
+        self.assertEqual(Progress(self.save).get(level_key(renamed))["best"], 55.0, "... and is saved")
+        self.assertEqual(progress.get(level_key(os.path.join(self.levels, "Bug Recreation.gmd")))["best"], 30.0)
+        self.assertEqual(timings.lookup(renamed), {"state": "free"}, "the measured timing follows too")
+        self.assertEqual(self.menu.level_info(renamed)["name"], "Sky High")
+        self.assertEqual(self.menu.tidy_level_files(progress, timings), [], "a tidy folder is left alone")
+
+        # a name that is taken is never overwritten
+        self.make("zzz.gmd", "Sky High")
+        moved = self.menu.tidy_level_files(progress, timings)
+        self.assertEqual([os.path.basename(new) for _old, new in moved], ["Sky High 2.gmd"])
+        self.assertTrue(os.path.isfile(renamed))
+        self.assertEqual(self.menu.tidy_level_files(), [])
+
     def test_no_levels_folder_yet_is_not_an_error(self):
         self.menu.LEVELS = os.path.join(self.dir, "not there")
         self.assertEqual(self.menu.my_levels(), [])
+        self.assertEqual(self.menu.tidy_level_files(), [])
 
     def test_level_info(self):
         path = self.make("New_level.gmd", "New level", lambda b: (b.add(13, 300, 45), b.add(660, 600, 45), b.add(13, 900, 45)))

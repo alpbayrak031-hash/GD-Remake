@@ -31,6 +31,23 @@ def ensure_home():
     return ""
 
 
+def safe_stem(name):
+    """A level name as a file name: letters, digits, spaces, - and _ are kept."""
+    return "".join(c if c.isalnum() or c in " -_" else "_" for c in name).strip() or "level"
+
+
+def unique_path(folder, stem, ext=".gmd"):
+    """A path in `folder` for a level called `stem` that does not exist yet: a taken name
+    gets " 2", " 3", ... so nothing is ever overwritten."""
+    stem = safe_stem(stem)
+    path = os.path.join(folder, stem + ext)
+    n = 2
+    while os.path.exists(path):
+        path = os.path.join(folder, "%s %d%s" % (stem, n, ext))
+        n += 1
+    return path
+
+
 def inside(path, folder):
     """Is `path` in `folder` (or a folder below it)?"""
     path, folder = os.path.abspath(path), os.path.abspath(folder)

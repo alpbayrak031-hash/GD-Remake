@@ -2,6 +2,7 @@
 """Build "GD Remake.app" for macOS - a self-contained app.
 
     python3 tools/build_app.py            ->  dist/GD Remake.app
+    python3 tools/build_app.py FOLDER     ->  FOLDER/GD Remake.app
 
 The app carries everything it runs on: a small native launcher, the game's Python
 source and built-in levels, and a private copy of the Python runtime it was built
@@ -14,9 +15,10 @@ copied from) and Xcode's command line tools (clang, install_name_tool, codesign)
 sips and iconutil, which come with macOS, make the icon.  Without those the script
 falls back to a shell-script launcher that uses the Python on the building Mac.
 
-After building, the script starts the app's own Python in a sandbox that is denied
-all access to the Python it was copied from, and fails if anything still reaches
-outside the app.
+After building, the script starts the app in a sandbox that is denied all access to
+the Python it was copied from (and with a throwaway folder for its files), has it
+open its window and draw every menu screen, and fails if that does not work or if
+anything still reaches outside the app.
 
 The game never writes inside the app: levels you make and your progress live in
 Documents/GD Remake (see gd/paths.py).
@@ -32,7 +34,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME = "GD Remake"
 BUNDLE_ID = "org.gdremake.GDRemake"
-VERSION = "1.1"
+VERSION = "1.2"
 MIN_MACOS = "11.0"                 # the oldest macOS python.org's own binaries run on (Apple Silicon)
 DIST = os.path.join(ROOT, "dist")
 PYVER = "%d.%d" % sys.version_info[:2]
@@ -359,7 +361,8 @@ def self_check(launcher, source, work):
     if sandboxed:
         cmd = ["sandbox-exec", "-p", profile] + cmd
     result = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
-    if result.returncode != 0 or "outside the app: none" not in result.stdout:
+    if (result.returncode != 0 or "outside the app: none" not in result.stdout or "window " not in result.stdout
+            or "sharing        a level went" not in result.stdout):
         sys.exit("the built app failed its self-check:\n%s" % result.stdout)
     return "passed%s" % (" with the installed Python blocked" if sandboxed else " (no sandbox-exec: not isolated)")
 
@@ -380,6 +383,10 @@ def build():
         sys.exit("This builds a macOS app; run it on a Mac.")
     bundle = os.path.join(DIST, NAME + ".app")
     if os.path.exists(bundle):
+        running = subprocess.run(["pgrep", "-f", os.path.join(bundle, "Contents", "MacOS")],
+                                 stdout=subprocess.PIPE, text=True).stdout.split()
+        if running:                                             # replacing its files would crash it
+            sys.exit("%s is open (process %s). Quit it first, then build again." % (NAME, ", ".join(running)))
         shutil.rmtree(bundle)                                   # only ever our own previous build
     contents = os.path.join(bundle, "Contents")
     resources = os.path.join(contents, "Resources")
@@ -412,6 +419,9 @@ def build():
             "NSHighResolutionCapable": True,
             "NSDocumentsFolderUsageDescription":
                 "GD Remake keeps the levels you build and your progress in Documents/GD Remake.",
+            "NSLocalNetworkUsageDescription":
+                "GD Remake uses your local network only when you choose Share on Wi-Fi, to send levels to and "
+                "receive levels from other players on the same network.",
         }
         if icon:
             info["CFBundleIconFile"] = "AppIcon"
@@ -433,4 +443,6 @@ def build():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:                                       # python3 tools/build_app.py [output folder]
+        DIST = os.path.abspath(sys.argv[1])
     build()

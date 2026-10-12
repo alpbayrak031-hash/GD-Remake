@@ -100,12 +100,17 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=MAX_NODES, budget=BUDGET_S
             chunk, seq = rate(level, chunks=(1,), max_nodes=max(max_nodes, MAX_NODES_FINE), check=check)
             if seq is None:
                 fine = max(max_nodes, MAX_NODES_FINE)
-                # ... then the same measurement with held jumps allowed
-                for part, nodes in ((coarse, max_nodes), ((1,), fine)):
-                    if part and seq is None:
-                        chunk, seq = rate(level, chunks=part, max_nodes=nodes, check=check, strict=False,
-                                          allow_push=False, phases=HOLD_PHASES)
+                # ... then with held jumps allowed.  First the one question that settles it -
+                # is there any such route, step by step? - so that an impossible level does
+                # not cost a whole second pass over every grid; only then how coarse it can be.
+                seq = solve(Simulation(level), chunk=1, max_nodes=fine, check=check, allow_push=False)
                 if seq is not None:
+                    chunk, held = 1, seq
+                    if coarse:
+                        chunk, seq = rate(level, chunks=coarse, max_nodes=max_nodes, check=check, strict=False,
+                                          allow_push=False, phases=HOLD_PHASES)
+                    if seq is None:
+                        chunk, seq = 1, held
                     return {"state": "ok", "ticks": chunk, "ms": to_ms(chunk), "capped": chunk == chunks[0],
                             "hold": True}, seq
                 # ... and only if that fails too, any route at all, the glitch included
@@ -185,6 +190,14 @@ class Timings:
     def store(self, level_path, digest, result):
         self.levels[os.path.basename(level_path)] = {"sha1": digest, "result": result}
         self.save()
+
+    def rename(self, old_path, new_path):
+        """The file was renamed: its result goes with it."""
+        entry = self.levels.pop(os.path.basename(old_path), None)
+        self._stamps.pop(old_path, None)
+        if entry is not None:
+            self.levels[os.path.basename(new_path)] = entry
+            self.save()
 
     def save(self):
         tmp = self.path + ".tmp"
