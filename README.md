@@ -5,8 +5,9 @@ the file formats GD levels and macros come in, a level editor, a pack of 13 leve
 easy to very hard, a hitbox viewer and a test suite.
 
 - **Language:** Python 3.9+ (developed on 3.12). **No dependencies** - the viewer uses
-  `tkinter`, which ships with Python. On macOS it can be built into an app
-  (`python3 tools/build_app.py`).
+  `tkinter`, which ships with Python.
+- **macOS app:** a self-contained `GD Remake.app` (nothing to install, not even Python)
+  is on the Releases page; `python3 tools/build_app.py` builds it.
 - **Reference version:** GD 2.2 (the decompilations used target 2.2 / 2.2081).
 - **Tick rate:** 240 steps per second, the rate the game itself uses.
 
@@ -28,30 +29,40 @@ you say no, the game still runs but cannot save. Set the environment variable
 
 ## The macOS app
 
+Download **GD Remake** from the repository's
+[Releases](https://github.com/alpbayrak031-hash/GD-Remake/releases), unzip it and move it
+to Applications - or build it yourself:
+
 ```bash
 python3 tools/build_app.py
 ```
 
-builds `dist/GD Remake.app`: double-click it, or drag it to Applications first. A built
-copy is also attached to the repository's
-[Releases](https://github.com/alpbayrak031-hash/GD-Remake/releases). It has
-its own icon and shows up as a single "GD Remake" entry in the Dock. What it is and is
-not:
+which writes `dist/GD Remake.app`.
 
-- A small native launcher (compiled by the build script) that runs this Python source
-  inside its own process, plus a copy of the source and the built-in levels.
-- **Not self-contained.** It uses the Python it was built with - a python.org "framework"
-  build with tkinter, e.g. `/Library/Frameworks/Python.framework/Versions/3.12`. It will
-  not start on a Mac that does not have that Python in the same place (the released app
-  needs Python 3.12 from python.org; it runs on Apple Silicon and Intel, macOS 11 or later). Building needs
-  Xcode's command line tools (`clang`); without them the script falls back to a shell
-  launcher, which works but shows Python's Dock icon.
-- Signed ad hoc only (not notarised): fine on the Mac that built it. Downloaded on
-  another Mac, macOS blocks the first launch: open System Settings > Privacy & Security
-  and click **Open Anyway** next to the message about GD Remake (on macOS 14 and earlier,
-  right-click the app and choose Open instead).
+- **Self-contained.** The app carries everything it runs on: a small native launcher, this
+  Python source, the built-in levels, and a private copy of the Python runtime (the
+  interpreter, the standard library, and Tcl/Tk for the window). Nothing has to be
+  installed on the Mac that runs it - no Python, no packages. It is about 55 MB.
+- It has its own icon and shows up as a single "GD Remake" entry in the Dock.
+- Runs on Apple Silicon and Intel Macs. It is built for macOS 11 or later and was tested
+  on macOS 26.6; I could not try older systems.
+- **Not notarised by Apple** (that needs a paid developer account), so macOS blocks the
+  first launch of a downloaded copy: open System Settings > Privacy & Security and click
+  **Open Anyway** next to the message about GD Remake (on macOS 14 and earlier,
+  right-click the app and choose Open instead). A copy you build yourself opens directly.
 - With no terminal to print to, a crash is written to
   `Documents/GD Remake/savedata/last_error.txt`.
+
+How the build checks itself: after putting the app together, the script starts it inside
+a sandbox that is denied all access to the Python it was copied from, and asks the game
+where its interpreter, standard library and Tcl/Tk came from (`--where`). The build fails
+unless every answer is a path inside the app.
+
+To build you need a python.org "framework" Python (the runtime is copied from it) and
+Xcode's command line tools. The copy leaves out what a game never uses - Python's test
+suite, IDLE, pip's installer and the two modules that need OpenSSL (the game opens no
+network connections). Python's licence (`LICENSE.txt`) and Tcl/Tk's (`license.terms`)
+travel inside the app next to the files they cover.
 
 Rebuild after changing the code; your levels and progress are not inside the app, so
 rebuilding or deleting it never touches them.
@@ -90,6 +101,7 @@ More:
 | `python3 main.py LEVEL --objects extra.json` | add object definitions (see below) |
 | `python3 tools/make_test_level.py` | rebuild the test level and its replay |
 | `python3 tools/make_level_pack.py [name]` | rebuild the level pack (all, or levels matching `name`) |
+| `python3 main.py --where` | print where the program, its Python and your files are |
 
 ## Playing
 

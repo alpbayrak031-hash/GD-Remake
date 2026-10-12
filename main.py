@@ -46,7 +46,11 @@ def main(argv=None):
     ap.add_argument("--zoom", type=float, default=1.5)
     ap.add_argument("--double-positions", action="store_true",
                     help="accumulate positions in doubles instead of C floats")
+    ap.add_argument("--where", action="store_true",
+                    help="print where the program, its Python and your files are, and exit")
     args = ap.parse_args(argv)
+    if args.where:
+        return where()
 
     if args.double_positions:
         C.FLOAT32_POSITIONS = False
@@ -135,6 +139,45 @@ def main(argv=None):
         return 2
     app.run()
     return 0
+
+
+def where():
+    """Where everything comes from.  Inside the app nothing may come from outside it (the
+    build script runs this to check); from source it simply shows your setup."""
+    import importlib
+    from gd import paths
+    print("program        %s" % paths.ROOT)
+    print("your files     %s" % paths.HOME)
+    print("python         %s  (%s)" % (sys.version.split()[0], sys.prefix))
+    print("standard lib   %s" % os.path.dirname(os.__file__))
+    tcl = "?"
+    try:
+        import tkinter
+        import _tkinter
+        interp = tkinter.Tcl()
+        tcl = interp.eval("info library")
+        print("tkinter        %s" % os.path.dirname(tkinter.__file__))
+        print("_tkinter       %s" % _tkinter.__file__)
+        print("tcl library    %s  (Tcl %s)" % (tcl, interp.eval("info patchlevel")))
+    except Exception as exc:
+        print("tkinter        NOT AVAILABLE: %s" % exc)
+        return 1
+    # everything the game imports while running, plus what the importers and the bot need
+    for name in ("gd.menu_tk", "gd.editor_tk", "gd.timing", "gd.macros", "gd.levelio", "hashlib", "zipfile",
+                 "gzip", "zlib", "json", "csv", "threading", "subprocess", "tkinter.filedialog",
+                 "tkinter.messagebox", "tkinter.font"):
+        importlib.import_module(name)
+    import hashlib
+    hashlib.sha1(b"x").hexdigest(), hashlib.md5(b"x").hexdigest(), hashlib.sha256(b"x").hexdigest()
+    if not os.environ.get("GD_REMAKE_APP"):
+        return 0
+    app = os.path.dirname(os.path.dirname(os.path.dirname(paths.ROOT)))      # .../GD Remake.app
+    outside = sorted({getattr(m, "__file__", None) or "" for m in list(sys.modules.values())} - {""})
+    outside = [f for f in outside if not paths.inside(f, app)]
+    outside += [p for p in (sys.prefix, os.path.dirname(os.__file__), tcl) if not paths.inside(p, app)]
+    print("app            %s" % app)
+    print("outside the app: %s" % (", ".join(outside) if outside else "none"))
+    return 1 if outside else 0
 
 
 def run_as_app():
