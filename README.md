@@ -32,7 +32,9 @@ you say no, the game still runs but cannot save. Set the environment variable
 python3 tools/build_app.py
 ```
 
-builds `dist/GD Remake.app`: double-click it, or drag it to Applications first. It has
+builds `dist/GD Remake.app`: double-click it, or drag it to Applications first. A built
+copy is also attached to the repository's
+[Releases](https://github.com/alpbayrak031-hash/GD-Remake/releases). It has
 its own icon and shows up as a single "GD Remake" entry in the Dock. What it is and is
 not:
 
@@ -40,11 +42,14 @@ not:
   inside its own process, plus a copy of the source and the built-in levels.
 - **Not self-contained.** It uses the Python it was built with - a python.org "framework"
   build with tkinter, e.g. `/Library/Frameworks/Python.framework/Versions/3.12`. It will
-  not start on a Mac that does not have that Python in the same place. Building needs
+  not start on a Mac that does not have that Python in the same place (the released app
+  needs Python 3.12 from python.org; it runs on Apple Silicon and Intel, macOS 11 or later). Building needs
   Xcode's command line tools (`clang`); without them the script falls back to a shell
   launcher, which works but shows Python's Dock icon.
-- Signed ad hoc only (not notarised): fine on the Mac that built it. Copied to another
-  Mac, right-click > Open is needed the first time.
+- Signed ad hoc only (not notarised): fine on the Mac that built it. Downloaded on
+  another Mac, macOS blocks the first launch: open System Settings > Privacy & Security
+  and click **Open Anyway** next to the message about GD Remake (on macOS 14 and earlier,
+  right-click the app and choose Open instead).
 - With no terminal to print to, a crash is written to
   `Documents/GD Remake/savedata/last_error.txt`.
 

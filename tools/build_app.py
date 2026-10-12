@@ -28,6 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME = "GD Remake"
 BUNDLE_ID = "org.gdremake.GDRemake"
 VERSION = "1.0"
+MIN_MACOS = "11.0"                 # the oldest macOS the launcher is built for (python.org's own floor on Apple Silicon)
 DIST = os.path.join(ROOT, "dist")
 
 ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
@@ -170,11 +171,21 @@ def make_launcher(path, work):
         source = os.path.join(work, "launcher.c")
         with open(source, "w", encoding="utf-8") as fh:
             fh.write(LAUNCHER_C)
+        # one slice per processor type the installed Python has (python.org builds have both
+        # Apple Silicon and Intel), so the app runs wherever that Python does
         try:
-            run("clang", "-O2", "-o", path, source, "-I", sysconfig.get_path("include"), library)
-            return "native"
-        except subprocess.CalledProcessError as exc:
-            print("  clang failed, using a shell launcher instead:\n%s" % exc.stdout)
+            archs = run("lipo", "-archs", library).split() if have("lipo") else []
+        except subprocess.CalledProcessError:
+            archs = []
+        base = ["clang", "-O2", "-mmacosx-version-min=" + MIN_MACOS, "-o", path, source,
+                "-I", sysconfig.get_path("include"), library]
+        for wanted in (archs, []):                              # all of them, else just this Mac's
+            try:
+                run(*(base + [flag for arch in wanted for flag in ("-arch", arch)]))
+                return "native (%s)" % (" + ".join(wanted) if wanted else "this Mac's processor only")
+            except subprocess.CalledProcessError as exc:
+                problem = exc.stdout
+        print("  clang failed, using a shell launcher instead:\n%s" % problem)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(LAUNCHER_SH.format(python=sys.executable))
     os.chmod(path, 0o755)
@@ -206,7 +217,7 @@ def build():
         "CFBundleShortVersionString": VERSION,
         "CFBundleVersion": VERSION,
         "CFBundleInfoDictionaryVersion": "6.0",
-        "LSMinimumSystemVersion": "11.0",
+        "LSMinimumSystemVersion": MIN_MACOS,
         "LSApplicationCategoryType": "public.app-category.games",
         "NSHighResolutionCapable": True,
         "NSDocumentsFolderUsageDescription":
