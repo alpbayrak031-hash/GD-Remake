@@ -1,0 +1,536 @@
+# Geometry Dash 2.2 physics recreation (Python)
+
+A fixed-step recreation of Geometry Dash's classic-mode player physics, an importer for
+the file formats GD levels and macros come in, a level editor, a pack of 13 levels from
+easy to very hard, a hitbox viewer and a test suite.
+
+- **Language:** Python 3.9+ (developed on 3.12). **No dependencies** - the viewer uses
+  `tkinter`, which ships with Python. On macOS it can be built into an app
+  (`python3 tools/build_app.py`).
+- **Reference version:** GD 2.2 (the decompilations used target 2.2 / 2.2081).
+- **Tick rate:** 240 steps per second, the rate the game itself uses.
+
+## Where your files are
+
+Everything the game writes goes into one folder, **Documents/GD Remake**:
+
+| Folder | What is in it |
+|---|---|
+| `Documents/GD Remake/levels/` | the levels you build or import - one `.gmd` file each (deleted ones are moved to `levels/trash/`) |
+| `Documents/GD Remake/savedata/` | `progress.json`, `timing.json` (the "tightest jump" numbers) and `backups/` from the editor |
+
+The 13 built-in levels are part of the program (`levels/` in this repository, or inside
+the app) and are never modified. My Levels has a **Show in Finder** button for your
+folder. It is the same folder however you start the game - the app or `python3 main.py`.
+The first time the app touches it, macOS asks whether GD Remake may use Documents; if
+you say no, the game still runs but cannot save. Set the environment variable
+`GD_REMAKE_HOME` to keep everything somewhere else.
+
+## The macOS app
+
+```bash
+python3 tools/build_app.py
+```
+
+builds `dist/GD Remake.app`: double-click it, or drag it to Applications first. It has
+its own icon and shows up as a single "GD Remake" entry in the Dock. What it is and is
+not:
+
+- A small native launcher (compiled by the build script) that runs this Python source
+  inside its own process, plus a copy of the source and the built-in levels.
+- **Not self-contained.** It uses the Python it was built with - a python.org "framework"
+  build with tkinter, e.g. `/Library/Frameworks/Python.framework/Versions/3.12`. It will
+  not start on a Mac that does not have that Python in the same place. Building needs
+  Xcode's command line tools (`clang`); without them the script falls back to a shell
+  launcher, which works but shows Python's Dock icon.
+- Signed ad hoc only (not notarised): fine on the Mac that built it. Copied to another
+  Mac, right-click > Open is needed the first time.
+- With no terminal to print to, a crash is written to
+  `Documents/GD Remake/savedata/last_error.txt`.
+
+Rebuild after changing the code; your levels and progress are not inside the app, so
+rebuilding or deleting it never touches them.
+
+## Run it from source
+
+The game (menu, level select, your own levels, progress):
+
+```bash
+python3 main.py
+```
+
+Level editor:
+
+```bash
+python3 editor.py
+```
+
+Tests:
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+More:
+
+| Command | What it does |
+|---|---|
+| `python3 main.py path/to/level.gmd` | play any level file directly (add `--practice`, `--debug`, `--hitboxes`, `--no-save`) |
+| `python3 editor.py path/to/level.gmd` | edit any level file |
+| `python3 main.py LEVEL --replay MACRO` | watch a macro play (`.gdr2`, `.gdr`, `.json`, `.txt`) |
+| `python3 main.py LEVEL --info` | print the import report (what was simulated, which IDs were skipped) |
+| `python3 main.py CCLocalLevels.dat --list` | list every level in a save file; pick one with `--select NAME_OR_INDEX` |
+| `python3 main.py LEVEL --headless --replay MACRO --trace out.csv` | no window; one CSV row per tick |
+| `python3 main.py LEVEL --record run.gdr2` | save your own inputs on exit (`.gdr2` or `.json`) |
+| `python3 main.py LEVEL --objects extra.json` | add object definitions (see below) |
+| `python3 tools/make_test_level.py` | rebuild the test level and its replay |
+| `python3 tools/make_level_pack.py [name]` | rebuild the level pack (all, or levels matching `name`) |
+
+## Playing
+
+Everything happens in **one window** - the menu, playing, the editor and play-testing
+from the editor - so there is only ever one program running. `python3 main.py` opens it
+on the menu:
+
+- **Home** - Play, My Levels, Level Editor, Progress.
+- **Level select** - one large card per level, paged with the arrow keys like GD's own
+  level select: name, difficulty face, the game modes the level contains, length,
+  measured timing, and two bars - **Normal Mode** and **Practice Mode** best percentages.
+  Enter plays, **P** practices, **B** watches the bot, **E** opens a copy in the editor.
+- **My Levels** - every level file in your own folder, `Documents/GD Remake/levels`: the
+  ones you built or imported. Play, practise, edit, or delete (deleted levels are moved
+  to the `trash` folder inside it, not erased). **Show in Finder** opens the folder. **N** makes a new level, **I** imports any supported file.
+  Each row also shows the level's **tightest jump** in milliseconds - see below.
+- **Progress** - totals (levels completed, attempts, jumps, time played) and a row per level.
+
+In a level:
+
+| Key | Action |
+|---|---|
+| Space / Up / W / click | jump (hold) |
+| Esc or P | pause menu: resume, restart, practice mode, hitboxes, debug info, exit |
+| R | restart |
+| Z / X | practice mode: place / remove a checkpoint |
+| H | hitboxes: blue = solid, red = kills, green = safe to touch; the player shows all three of its boxes (see Hitboxes) |
+| O | debug overlay: tick, position, velocity, mode, speed, state flags |
+| T, N, - / = | trail, single step, slow down / speed up |
+
+**Practice mode** drops a checkpoint every 1.25 s while you are safe and puts you back at
+the last one when you die. A checkpoint you die at twice within 0.4 s is removed
+automatically, so a badly placed one cannot trap you.
+
+**Progress** is saved to `savedata/progress.json` (in Documents/GD Remake) after every death and completion: best
+percentage in normal and in practice mode, attempts, completions, best time, jumps and
+play time, per level. Watching the bot never counts. "Reset all progress" is on the
+Progress screen.
+
+Each game mode has its own icon and colour, and the portal that switches to a mode shows
+that icon in that colour: cube (green square), ship (pink rocket with a rider), ball
+(orange spoked wheel), UFO (yellow saucer with a dome), wave (cyan arrowhead), robot
+(white head on two legs), spider (violet body on four legs), swing (mint ball with three
+thrusters). The wave is drawn smaller than the others, as in GD.
+
+**Trails** follow GD's rules ([gd/effects.py](gd/effects.py)):
+
+| Mode | What follows it |
+|---|---|
+| cube, ball, robot, spider | particles kicked up while sliding and on landing; a fading ribbon **only** after an orb, pad, gravity change or teleport, gone the moment they land (the ball gets none from a gravity change) |
+| ship | a ribbon the whole time, exhaust particles, and a flame while the button is held |
+| UFO | a ribbon the whole time, particles underneath, and a short burst on every click |
+| wave | the solid zig-zag band with a pale core, kept for every corner until it scrolls away; it fades in 0.2 s when the wave ends |
+| swing | a ribbon the whole time, a flame at the back and one on the side gravity pulls away from |
+| robot | a flame under the feet while a held jump is being boosted |
+| spider | a beam between the two ends of each teleport |
+| dash orb | a cone of fire behind the player; the ribbon is off while dashing |
+
+When each trail turns on and off, the wave band's widths (6 and 2 units times size), the
+0.2 s wave fade and the 0.12 s UFO burst come from the decompiled game. The ribbon's
+0.3 s fade and 10-unit width are from memory. tkinter has no transparency or textures,
+so fades are drawn by mixing towards the background colour, the ribbon is flat-coloured,
+particles are plain squares, and the wave band does not pulse (there is no music).
+
+## The level pack
+
+`levels/index.json` lists them; the menu shows them in this order.
+
+| # | Level | Difficulty | Length | Tightest timing | What is in it |
+|---|---|---|---|---|---|
+| 1 | First Steps | easy | 31 s | 133 ms | cube: single and double spikes, stairs |
+| 2 | Stepping Stones | easy | 30 s | 133 ms | platforms over spikes, jump pads |
+| 3 | Lift Off | easy | 36 s | 133 ms | two ship flights through wide gates |
+| 4 | Bounce House | easy | 34 s | 133 ms | pads, yellow orbs, a relaxed ball section |
+| 5 | Flip Side | easy | 36 s | 133 ms | ceiling runs, UFO through big gaps |
+| 6 | Double Time | medium | 30 s | 67 ms | spike groups with small spikes, orb chains, 2x |
+| 7 | Night Flight | medium | 50 s | 67 ms | spike-lined ship and UFO gates, ball, wave |
+| 8 | Switchback | medium | 38 s | 67 ms | gravity flips, robot, spider, mini |
+| 9 | Needle Thread | hard | 40 s | 33 ms | 2x: four-spike jumps, ship corridors, 2-block wave tunnel |
+| 10 | Clockwork | hard | 51 s | 33 ms | robot, spider, ball, UFO, mini cube, then 3x |
+| 11 | Zero G | hard | 34 s | 33 ms | ceiling runs, swing, mini ship, wave at 2x |
+| 12 | Event Horizon | very hard | 47 s | 17 ms | 3x and 4x: five- and six-spike jumps, long wave tunnels |
+| 13 | Overclock | very hard | 46 s | 25 ms | every mode at 3x, mini ship and mini wave, 4x finish |
+
+Each level ships with a `.gdr2` replay ("Watch bot") that completes it. The levels are
+plain `.gmd` files using real object IDs, so they can be imported into Geometry Dash with
+GDShare - they have no decoration, and how they play there depends on how close this
+engine is (see "Known inaccuracies").
+
+### How difficulty is measured
+
+"A solver finished it" is not good enough: the first version of the test level had a pad
+jump that the solver only cleared with a trick, and a person could not. So
+[gd/analysis.py](gd/analysis.py) rates a level by the **coarsest input grid on which it is
+still solvable** - the button may only change every N ticks, on three different grid
+phases, and buffered jumps (holding so the cube re-jumps the instant it lands) are
+forbidden because a search can abuse them to hit any window. The result tracks the
+tightest timing window in the level: a double spike rates 133 ms, a triple spike at 1x
+50 ms, four spikes at 2x 42 ms, five at 3x 17 ms. Bands: easy 100 ms or more, medium
+50-67 ms, hard 33-42 ms, very hard 17-25 ms. Pads are additionally checked hands-off:
+no input may be needed to survive one.
+
+**My Levels shows the same measurement for your own levels** as "tightest jump": `~83 ms`
+means the bot can still finish the level when the button may only change every 83 ms,
+so no input in it needs better timing than about that. The colour is the band above
+(green easy, yellow medium, orange hard, pink very hard). It is worked out in the
+background by [gd/timing.py](gd/timing.py) the first time a level is listed and again
+whenever its file changes, and remembered in `savedata/timing.json` (in Documents/GD Remake); measuring pauses
+while you play or edit so it never costs frames. It uses a finer list of grids than the
+pack did (200, 167, 133, 117, 100, 83, 67, 58, 50, 42, 33, 29, 25, 21, 17, 12, 8, 4 ms),
+and the true window lies between the value shown and the next coarser one. The last
+entry is a single physics step (1/240 s): `~4 ms` means exactly one step works - what
+players call frame perfect. Other readings:
+
+| Shown | Meaning |
+|---|---|
+| `200+ ms` | even the coarsest grid works: nothing tighter than a single spike |
+| `no input needed` | the level finishes without touching the button |
+| `glitch route only` | no normal route exists; the only way through uses the push onto a block after a gravity switch (see "Surprising but intended" below) |
+| `no way through found` | the bot could not finish it even trying every single physics step, with held jumps and the glitch allowed - impossible as built, or beyond its search budget (150 000 positions per attempt, 400 000 for the step-by-step ones, 45 s per level) |
+
+The bot looks for a route in this order: ordinary taps on every grid from 200 ms down
+to a single step, then held jumps, and the glitch last. So "Watch bot" only ever shows
+the glitch on a level that cannot be finished without it, and says so when it does.
+
+A **held jump** is a jump you start by already having the button down when you land: the
+jump then begins by itself on the first step you are back on the ground, a touch more
+exactly than any fresh tap can. A level that only works that way still gets a number:
+the same measurement is run again with holding allowed (on six grid phases instead of
+three, because chains of held jumps can make a level look more forgiving than it is),
+and "Watch bot" mentions that its route holds the button.
+| `measuring...` | not done yet; the row updates by itself |
+
+Because buffered jumps are not allowed in the search, a level made of jumps you would
+simply hold through can read tighter than it feels. And a `~4 ms` jump is not as
+hopeless by hand as it sounds: like the real game by default, this one reads the
+button once per drawn frame, and a frame covers several physics steps - whenever a
+frame happens to begin on the one step that works, a press anywhere in the frame
+before it counts. The editor's "Watch bot" runs this same search and plays the result.
+
+What this number does not capture: how many tight inputs there are, how fast you must
+read, or how a level feels. I cannot playtest, so treat the labels as measured timing
+precision, not as a promise about how hard a level will feel to you.
+
+## The editor
+
+"Level Editor" in the menu, "Edit" on any of your levels, or `python3 editor.py [level]`
+to start straight in it. It is a screen of the same window: **Close** (top left, or
+Cmd/Ctrl + W) goes back to your levels, **Quit** closes the game, and **PLAY** play-tests
+the level right there - leaving the level (Esc, then "Exit level") returns you to the
+editor exactly as you left it.
+
+**Your level is saved automatically.** About a second after any change it is written to
+its file; the status line says "Saved" (or, in red, why it could not). Close, Quit and
+PLAY save first. A new level gets its own file in `Documents/GD Remake/levels` the first time you change
+it, so it shows up under My Levels without a "save as" step. The first time an editing
+session overwrites a file that already existed, the previous version is copied to
+`Documents/GD Remake/savedata/backups/` - undo (200 steps) covers ordinary mistakes, that copy covers the
+rest. "Save as" continues in a new file and leaves the old one as it is.
+
+The toolbar on top holds Close / Quit, New / Open / Save as, Undo / Redo, the level name,
+how the level starts (mode, speed, mini, flipped gravity) and **PLAY**. The build bar at the bottom has
+one tab per kind of object - Blocks, Hazards, Slopes, Pads, Orbs, Mode portals, Other
+portals - with a picture tile for each object; next to it are the tools (Build, Erase,
+Rotate, Flip X / Y) and the view options (grid, hitboxes, zoom, jump to start / finish).
+The object under the cursor is previewed exactly where it will land, and the status line
+always says what the current tool does.
+
+| Input | Action |
+|---|---|
+| left click / drag | place the selected object (snaps to the 30-unit grid) |
+| right click / drag, or Shift + left | erase |
+| Alt/Option + click | pick the object under the cursor as the brush |
+| **1** - **9**, **0**, Tab | choose a tile in the open tab, next tab |
+| **R**, **F**, **V** | rotate the brush 90 degrees, flip X, flip Y |
+| **E** | erase tool on/off |
+| **G** | half grid (15 units) |
+| wheel / trackpad, arrows, **A** / **D**, Home / End, the scrollbar | scroll |
+| Space + drag | pan |
+| **-** / **=** | zoom |
+| **H** | hitboxes on/off (on by default) |
+| **P** | play-test the level (in the same window; nothing is saved to your progress) |
+| **B** | let the bot try it; reports the measured timing and plays its run |
+| **?** | all shortcuts |
+| Cmd/Ctrl + O / N / Z, Shift+Z | open, new, undo, redo |
+| Cmd/Ctrl + W, Cmd/Ctrl + S | close the editor, save right now |
+
+It opens every level format the importer reads and saves `.gmd` (into your levels folder, where
+the menu's My Levels screen finds it; other formats are saved as a new `.gmd`). Objects the engine does not
+simulate (decoration, triggers) are kept and written back untouched; they are drawn as
+small grey markers. Built-in levels open as a copy, so the originals cannot be
+overwritten. Pads and small spikes snap to the floor of their cell (or its ceiling when
+rotated 180).
+
+## Hitboxes
+
+These are Geometry Dash's own sizes, not the size of the drawing. Press **H** to see them,
+in the colours of GD's own "Show Hitboxes": blue is solid, red kills, green is safe to touch.
+
+### The player's three boxes
+
+| Box | Colour | Size | Rotates? | Used for |
+|---|---|---|---|---|
+| outer | red | 30 x 30 | never | spikes, saws, orbs, pads, portals - and landing on or bumping into the faces of blocks |
+| inner | blue | 9 x 9 (0.3 x) | never | running into a block: you only die once this small box reaches it |
+| rotated | dark red | 30 x 30 | with the icon | objects placed at an angle that is not a multiple of 90 degrees: the object's own rotated box must overlap this one as well as the outer box |
+
+How they are tested (`gd/sim.py`, `Player.outer_rect / inner_rect / oriented_box`):
+
+- **Upright objects** - the usual case - are plain rectangle-against-rectangle tests with
+  the outer box. The cube's spin makes no difference to them at all.
+- **Objects at an odd angle** (a spike turned 45 degrees, say) need two things at once:
+  the outer box touching the object's bounding rectangle, and the two rotated boxes
+  overlapping (a separating-axis test, the game's `OBB2D::overlaps1Way` both ways). So
+  next to such a spike it matters which way the cube happens to be turned - as in GD.
+- **Blocks** are sorted out with the outer box (which face is the cube arriving at: land,
+  bump, or neither), and only "neither" goes on to the inner box, which decides death.
+
+The rotated box needs the icon's real angle, so rotation is simulated, not just drawn:
+a cube in the air turns 180 degrees every 26/60 s (415.4 degrees/s; mini 540) whatever
+the speed, starts turning when it jumps, hits a pad or orb, or walks off an edge, and on
+landing is eased onto its nearest side. Ship, UFO, wave and swing lean into their
+direction of travel; the ball rolls at 600 degrees/s; robot and spider stay upright.
+
+### Sizes
+
+| Object | Drawn | Hitbox |
+|---|---|---|
+| player | 30 x 30 | 30 x 30 against hazards, portals, pads and orbs (red); **9 x 9** against blocks (blue) |
+| mini player | 18 x 18 | 18 x 18, inner 5.4 x 5.4 |
+| wave | about 20 tall | 10 x 10 |
+| spider | 30 x 30 | 27 x 27 |
+| spike | 30 x 30 triangle | **6 x 12** box in its centre |
+| small spike | 30 x 14 | 6 x 5.6 |
+| block | 30 x 30 | 30 x 30 |
+| orb | 36 across | 36 x 36 |
+| yellow / pink / blue pad | 25 wide | 25 x 4 / 5 / 6 |
+| big saw | about 100 across | circle, radius 32.3 |
+
+So a cube only dies on a spike when its box reaches that 6 x 12 core, and it can sink
+10.5 units into the side of a block before the inner box touches it - both as in the
+game. The sizes come from gd-sim's object table (see below); a few 2.x objects use an
+assumed size and are listed under "Known inaccuracies".
+
+## Architecture
+
+```
+main.py              command line: load -> report -> viewer or headless run
+gd/constants.py      every physics constant, each tagged with its source
+gd/objects.py        object ID -> kind + hitbox table
+gd/levelio.py        containers (.gmd .gmd2 .lvl .dat ...) and the level-string codec
+gd/level.py          level string -> GameObjects, spatial sections, import report
+gd/player.py         player state and per-mode physics (port of PlayerObject::*)
+gd/sim.py            the 240 Hz step: input -> update -> collisions; snapshot/restore
+gd/geometry.py       rect / oriented-box / circle tests
+gd/macros.py         InputSequence + macro importers (.gdr2 .gdr ...) and a .gdr2 writer
+gd/render_tk.py      game view (HUD, pause menu, practice mode) and the Painter shared with
+                     the editor; never writes sim state
+gd/menu_tk.py        the one window: home, level select, my levels, progress; hosts the
+                     game view and the editor
+gd/icons.py          vector icons for the eight modes and the difficulty faces
+gd/effects.py        trails, fire and particles (visual only)
+gd/ui.py             colours, fonts and canvas-drawn buttons shared by every screen
+gd/paths.py          where things live: the program, and the player's folder in Documents
+gd/progress.py       saved progress (savedata/progress.json)
+gd/editor_model.py   editor document: objects, snapping, undo, save/load (no GUI)
+gd/editor_tk.py      the editor screen
+gd/autoplay.py       brute-force solver (depth-first, snapshot/restore)
+gd/analysis.py       difficulty rating and timing-window analysis
+gd/timing.py         "tightest jump" for My Levels: measurement, cache, background worker
+tools/make_test_level.py   builds levels/test_level.gmd (+ .gdr2 / .json replay)
+tools/make_level_pack.py   builds and rates the 13-level pack
+tools/canvas_svg.py        dumps a Tk canvas to SVG (used to look at screens while building them)
+tools/build_app.py         builds dist/GD Remake.app (macOS)
+tests/               physics values, importers, determinism, pack, editor, progress, icons
+```
+
+One step (`Simulation.step(pressed)`), in the order the game does it:
+
+1. button edge -> `push_button` / `release_button`
+2. `Player.update`: velocity (`update_jump`), then position
+3. collisions: level floor/ceiling -> portals, pads, orbs, slopes -> solids -> hazards
+
+The simulation never reads a clock. The same `InputSequence` always produces the same
+trace (`Simulation.digest`), and `snapshot()` / `restore()` rewind exactly; both are tested.
+
+## File formats
+
+The loaders look at file **content**, so the extension does not have to be right.
+
+**Levels**
+
+| Format | Notes |
+|---|---|
+| `.gmd` | GDShare export: RobTop's plist dialect, full `<plist>` or bare `<d>`; short or long tag names |
+| `.gmd2` | GDShare v2: ZIP containing `level.data` |
+| `.lvl` | GDShare legacy: zlib/gzip-compressed dictionary |
+| `CCLocalLevels.dat` | Windows/Android saves (XOR 11 + base64 + gzip). macOS saves (AES-256-ECB) are decrypted with the system `openssl` |
+| bare level string | `H4sI...` (base64 + gzip) or already decoded text |
+| `.json` | any JSON carrying the string in a `data` / `levelString` / `k4` field |
+| server reply | a raw `downloadGJLevel22` response |
+
+Not supported: `.gmdl` (level *lists*), `.level` (Main Levels Editor).
+
+**Macros** - `.gdr` / `.gdr2` are replays (recorded inputs), not levels, so they go in `--replay`.
+
+| Format | Status |
+|---|---|
+| `.gdr2` (GDReplayFormat 2) | implemented from the reference reader's source; read and write |
+| `.gdr`, `.gdr.json` (GDReplayFormat 1, MessagePack / JSON) | field names from memory - **unverified**, reader is tolerant |
+| Mega Hack `.mhr.json`, TASBot `.json`, EchoBot `.echo` (JSON) | best effort, **unverified** against real files |
+| plain text (`fps`, then `frame down [p2]` lines) | supported |
+| this project's `.json` | native |
+| `.re` `.re2` `.re3` `.xd` `.slc` `.zbf` `.replay` `.mhr` (binary) `.ttr` | **not supported** |
+
+Macro frames are converted to 240 Hz ticks using the file's frame rate. Player-2 and
+platformer left/right events are dropped (and counted). If a macro recorded in the real
+game dies early here, try `--replay-offset 1` or `-1`: bots disagree by a frame on where
+frame 0 is. Expect real-game macros to desync on anything listed under "Known
+inaccuracies".
+
+## Where the numbers come from
+
+Full list with one line per constant: [gd/constants.py](gd/constants.py). Sources:
+
+| Tag | Source | Used for |
+|---|---|---|
+| OSGD | [StarryDawn72/open-source-gd-project](https://github.com/StarryDawn72/open-source-gd-project) - hand-verified reconstructions of GD 2.2081 functions, MIT | `update`, `updateJump`, `setYVelocity`, `flipGravity`, `ringJump`, `propellPlayer`, `bumpPlayer`, mode toggles, dash, stair snapping, saw tests, `collisionCheckObjects` |
+| GDP | [camila314/gdp](https://github.com/camila314/gdp) (branch `2.2`) - decompiled physics functions | `updateTimeMod`, step count in `GJBaseGameLayer::update`, `collidedWithObjectInternal`, `collidedWithSlopeInternal`, `slopeYPos` |
+| SIM | [camila314/pathfinder](https://github.com/camila314/pathfinder) `gd-sim` - simulator validated against the game | hitbox table, measured velocities used as cross-checks, level bounds, behaviour the decompilations do not cover |
+| DOCS | [Wyliemaster/gddocs](https://github.com/Wyliemaster/gddocs) | level string and header keys |
+| GDR | [maxnut/GDReplayFormat](https://github.com/maxnut/GDReplayFormat) (branch `gdr2`) | `.gdr2` layout |
+
+Key values (native velocity units; multiply by 54 for units/second):
+
+| | 0.5x | 1x | 2x | 3x | 4x |
+|---|---|---|---|---|---|
+| horizontal speed, units/s | 251.16 | 311.58 | 387.42 | 468.00 | 576.00 |
+| cube jump velocity | 10.62 | 11.18 | 11.42 | 11.23 | 11.23 |
+| cube gravity per step | 0.212 | 0.216 | 0.215 | 0.216 | 0.216 |
+
+- Velocity is rounded to 3 decimals on every change (`setYVelocity`), which is why the
+  per-step gravity values above are exact.
+- Cube terminal velocity 15. Ball / spider gravity x0.6, robot x0.9. Mini: jumps x0.8.
+- Ship: thrust/gravity factors -1 / 0.8 / 1.2 times 0.4 or 0.5, limits +8 / -6.4 (mini: divided by 0.85).
+- UFO jump 7 (mini 6.8). Swing gravity x0.4 (mini 0.6), keeps 80% speed on a flip.
+- Wave moves at exactly +-45 degrees (mini: 2:1).
+- Robot: jump at half strength, gravity cancelled while held for up to 67 steps.
+- Orbs: pink 0.72, red 1.38, blue 0.8 then halved by the flip, black -15 (per-mode variants in the file).
+- Pads: 16 x (yellow 1.0, pink 0.65, red 1.25), ball x0.6.
+- Hitboxes: player 30 (mini 18), wave 10, spider 27; inner hitbox 0.3 x size decides deaths
+  against solids; spike 6 x 12; landing tolerance 10 (flying modes 6).
+- Rotation: cube 180 degrees per 26/60 s in the air (mini 20/60 s), eased to the nearest
+  side on the ground; ball 600 degrees/s; flying modes turn towards their direction of
+  travel (ship 0.15, UFO 0.07, wave 0.25 of the way per 60 Hz frame).
+
+**Cross-checks that pass** (see `tests/test_physics.py`): gd-sim's independently measured
+numbers fall out of the decompiled formulas to the last digit - first-step jump
+velocities 562.032 / 592.056 / 605.07 / 594.756 u/s, UFO click 371.034 (mini 358.992),
+mini ship limits 508.248 / -406.566, ball switch 181.116, and the 7-9 step "coyote"
+window that only exists with flipped gravity.
+
+## Known inaccuracies and gaps
+
+Nothing here has been compared against the running game - only against decompiled code
+and another simulator. Treat "frame-accurate" as a goal, not a claim.
+
+**Inferred, because no decompilation of the function was available**
+
+- `checkCollisions`: handling of the level floor/ceiling follows gd-sim. A flipped cube
+  or robot that reaches the ground dies; a normal-gravity ball hitting the ceiling just stops.
+- `pushButton` / `releaseButton`: a press calls `updateJump(0)` immediately (this
+  reproduces gd-sim's fresh-click vs held-jump difference); releasing ends a robot boost.
+- `hitGround`: zeroes vertical velocity and re-enables jumping; nothing else.
+- Pad strengths per mode (`getBumpMod`): derived from gd-sim's measured tables. Robot,
+  spider and swing are assumed to use the cube values. Blue pad behaviour is from gd-sim.
+- Spider teleport (`spiderTestJumpInternal`): **an estimate** - straight up/down to the
+  first solid or the mode ceiling/floor; a hazard in the way kills.
+- Mode ceilings: 300 units for ship/UFO/wave (gd-sim), 240 for ball (gd-sim); spider 240
+  and swing 300 are from memory.
+- Level end (last object + 340) and the kill height (1476.3, raised for tall levels) are estimates.
+
+**Surprising but intended**
+
+- **A ball can be lifted onto a one-block step.** If the ball switches gravity roughly
+  50-100 ms before it would run into the side of a step, it is placed on top of the step
+  instead of dying (and a second click right after keeps it there). This is not a
+  collision glitch of this engine: it is a rule at the end of the game's own block
+  collision function (`if (canSnap && m_lastFlipTime != 0.0 && m_totalTime - m_lastFlipTime < 0.1)`,
+  camila314/gdp, 2.2) - for 0.1 s after any gravity flip, a collision that would kill
+  pushes the player out on its head side when its feet side is at least 10 units clear.
+  The same rule pushes a player down out of a block overhead. The debug overlay shows
+  "pushed out of a block (gravity flip grace)" when it fires. gd-sim has no such rule and
+  I cannot run the real game to watch it, so it is switchable: `FLIP_GRACE_PUSH` in
+  [gd/constants.py](gd/constants.py). **The bot uses it only as a last resort**: the
+  rating and "tightest jump" never count it, and "Watch bot" plays a route with it only
+  when it has found no route without it.
+
+**Approximate**
+
+- **Slopes.** Geometry and launch speed are from the decompilation; attaching, sticking
+  and leaving are simplified. Only 90-degree rotations are supported. This is the least
+  reliable part of the engine.
+- **Solids at non-90-degree rotations** only kill; you cannot stand on them.
+- Hazard hitboxes are centred on the object; any per-object offset is unknown.
+- **The rotated box.** That angled objects are tested box-against-rotated-box is from the
+  decompilation (for orbs, pads and portals); the loop that handles hazards is not in any
+  decompilation I could read and is assumed to do the same. The rotated box's size (the
+  outer box's) is an inference too. The cube's rotation is ported exactly; the ball's
+  spin restarting on landing, the tilt on slopes and the frozen angle during a dash are
+  estimates. None of this affects levels without angled objects.
+- Positions are accumulated in single precision like cocos2d's `CCPoint`; the step
+  scale `0.9 * 0.25` is assumed to be a C `float`. `--double-positions` switches the first off.
+- Where the sources disagree I followed the decompilation: ball velocity is rounded after
+  a switch (gd-sim: not), and wave -> cube / UFO halves or quarters the wave's velocity
+  (gd-sim uses different factors).
+- A few 2.x objects use an assumed hitbox (same as their 1.x sibling): robot, spider and
+  swing portals, gravity-toggle portal, red and spider pads, dash and spider orbs. The
+  import report says how many such objects a level has.
+
+**Not implemented**
+
+- Triggers of every kind (move, rotate, toggle, spawn, alpha...). Moving objects stay
+  put and toggled-off objects stay solid. Groups are parsed but unused.
+- Dual mode / player 2, platformer mode, reverse gameplay, time warp, gravity and force
+  triggers/blocks, teleport portals and orbs, toggle/custom orbs, D/J/S/H/F blocks,
+  coins and collectibles, checkpoints, start positions (ignored).
+- **Object coverage.** Only IDs with a known hitbox are simulated: the blocks, spikes,
+  saws, slopes, pads, orbs and portals in `gd/objects.py` (mostly 1.0-1.9 objects).
+  Unknown IDs are skipped and listed by `--info`. A level built from other block
+  designs will have holes until you add those IDs:
+
+  ```json
+  {"1234": {"kind": "solid", "w": 30, "h": 30},
+   "5678": {"kind": "hazard", "w": 9, "h": 12}}
+  ```
+
+  Kinds: `solid`, `breakable`, `hazard`, `saw` (`arg` = radius), `slope`, `slope_hazard`.
+- Object keys 99 (multi-activate), 121 (No Touch) and 134 (Passable) are from memory.
+  When both `32` and `128/129` scale keys are present, `128/129` win.
+- The viewer is a debug view: flat shapes, no art.
+
+## Licence note
+
+The player physics in `gd/player.py` and parts of `gd/sim.py` are ports of functions from
+StarryDawn72/open-source-gd-project, which is MIT licensed; keep this attribution if you
+redistribute. camila314/gdp and gd-sim were used as references for constants and
+behaviour only - no code was copied from them (gd-sim is not licensed for redistribution).
+Geometry Dash is a trademark of RobTop Games; this project contains none of its assets.

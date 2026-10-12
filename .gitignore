@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+
+# build output (python3 tools/build_app.py)
+dist/
+build/
+
+# the player's own files live in Documents/GD Remake, never here;
+# these keep stray copies out of the repository all the same
+savedata/
+levels/trash/
+levels/*
+!levels/index.json
+!levels/[0-9][0-9]_*.gmd
+!levels/[0-9][0-9]_*.gdr2
+!levels/test_level.gmd
+!levels/test_level.gdr2
+!levels/test_level.replay.json
+
+# macOS and editors
+.DS_Store
+*.tmp
+.claude/
