@@ -13,6 +13,28 @@ easy to very hard, a hitbox viewer and a test suite.
 - **Reference version:** GD 2.2 (the decompilations used target 2.2 / 2.2081).
 - **Tick rate:** 240 steps per second, the rate the game itself uses.
 
+## Online Levels
+
+**Online Levels** on the home screen (or **O**) browses the public levels on Geometry
+Dash's own level server - the game's lists (Featured, Trending, Most downloaded, Most
+liked, Recent, Rated) and a search by name or level ID. Each level shows its creator,
+difficulty, stars, downloads, likes and length; **Play** downloads it and starts it,
+**Save** puts a copy in My Levels (credited to its creator).
+
+Most levels made since 2.0 use things this engine does not have yet - move, alpha,
+toggle and spawn triggers above all - so many will not play as intended. Once a level is
+downloaded its row says how many of its objects the engine runs and what it is missing
+("runs 10,245 of 24,746 objects - missing: fading objects (alpha triggers)").
+Platformer levels are marked and cannot be played.
+
+How it talks to the server: the same two requests the game makes ("a page of levels",
+"this level"), over HTTPS, made by macOS's own `curl` (it brings the system's
+certificates, so the app needs no TLS library of its own; other systems use Python's).
+No account, nothing uploaded. The `secret` value in the request is the fixed one every
+Geometry Dash client sends - not a password. Downloads are cached in
+`Documents/GD Remake/savedata/online/`. Everything that comes back is treated as
+untrusted text and only ever goes through this program's level parser.
+
 ## Sharing levels on Wi-Fi
 
 **Share on Wi-Fi** on the home screen lets players on the same network pass levels to
@@ -158,7 +180,7 @@ Everything happens in **one window** - the menu, playing, the editor and play-te
 from the editor - so there is only ever one program running. `python3 main.py` opens it
 on the menu:
 
-- **Home** - Play, My Levels, Level Editor, Progress.
+- **Home** - Play, My Levels, Online Levels, Level Editor, Share on Wi-Fi, Progress.
 - **Level select** - one large card per level, paged with the arrow keys like GD's own
   level select: name, difficulty face, the game modes the level contains, length,
   measured timing, and two bars - **Normal Mode** and **Practice Mode** best percentages.
@@ -179,6 +201,7 @@ In a level:
 | Z / X | practice mode: place / remove a checkpoint |
 | H | hitboxes: blue = solid, red = kills, green = safe to touch; the player shows all three of its boxes (see Hitboxes) |
 | O | debug overlay: tick, position, velocity, mode, speed, state flags |
+| F | FPS counter, top right: frames per second over the last second, **1% low** (the average frame rate of the slowest 1% of frames in the last 10 seconds) and **1% high** (the fastest 1%). Also in the pause menu; the game remembers whether it is on |
 | T, N, - / = | trail, single step, slow down / speed up |
 
 **Practice mode** drops a checkpoint every 1.25 s while you are safe and puts you back at
@@ -314,8 +337,11 @@ rest. "Save as" continues in a new file and leaves the old one as it is.
 The toolbar on top holds Close / Quit, New / Open / Save as, Undo / Redo, the level name,
 how the level starts (mode, speed, mini, flipped gravity) and **PLAY**. The build bar at the bottom has
 one tab per kind of object - Blocks, Hazards, Slopes, Pads, Orbs, Mode portals, Other
-portals - with a picture tile for each object; next to it are the tools (Build, Erase,
-Rotate, Flip X / Y) and the view options (grid, hitboxes, zoom, jump to start / finish).
+portals - with a picture tile for each object; next to it are the tools (Build, Select,
+Erase, Rotate, Flip X / Y) and the view options (grid, hitboxes, zoom, jump to start /
+finish). Besides blocks, slabs, spikes, saws, slopes, pads, orbs and every portal, the
+tabs have half blocks, small blocks, platforms, thin lines, medium spikes, spike slopes
+and the **dual portals**.
 The object under the cursor is previewed exactly where it will land, and the status line
 always says what the current tool does.
 
@@ -327,6 +353,11 @@ always says what the current tool does.
 | **1** - **9**, **0**, Tab | choose a tile in the open tab, next tab |
 | **R**, **F**, **V** | rotate the brush 90 degrees, flip X, flip Y |
 | **E** | erase tool on/off |
+| **S** | select tool on/off: click an object, Shift + click to add one, drag over empty space for a box |
+| drag a selection, arrows | move the selection (snaps to the grid), nudge it one cell |
+| **R** (with a selection), Delete | turn the selection 90 degrees as a group, remove it |
+| Cmd/Ctrl + C, V, D, A | copy, paste where the mouse is, duplicate next to it, select all |
+| Esc | deselect (again: back to building) |
 | **G** | half grid (15 units) |
 | wheel / trackpad, arrows, **A** / **D**, Home / End, the scrollbar | scroll |
 | Space + drag | pan |
@@ -344,6 +375,13 @@ simulate (decoration, triggers) are kept and written back untouched; they are dr
 small grey markers. Built-in levels open as a copy, so the originals cannot be
 overwritten. Pads and small spikes snap to the floor of their cell (or its ceiling when
 rotated 180).
+
+**Big levels stay smooth.** Only what is on screen (plus a screen's width either side)
+is on the canvas, the document indexes its objects by position, and an edit redraws
+only the objects it touched. On a 24,746-object level (Bloodbath) a scroll step takes
+about 2 ms, a mouse move under 1 ms, placing a block about 5 ms, undo about 10 ms,
+zooming about 30 ms and selecting everything about 40 ms; the canvas holds about 2,300
+items instead of 42,000.
 
 ## Hitboxes
 
@@ -421,7 +459,10 @@ gd/editor_tk.py      the editor screen
 gd/autoplay.py       brute-force solver (depth-first, snapshot/restore)
 gd/analysis.py       difficulty rating and timing-window analysis
 gd/timing.py         "tightest jump" for My Levels: measurement, cache, background worker
+gd/fps.py            the FPS counter's numbers (FPS, 1% low, 1% high)
+gd/settings.py       small preferences kept between sessions (savedata/settings.json)
 gd/share.py          sharing levels on the local network: rooms, the code, checks, discovery (no window code)
+gd/online.py         browsing and downloading public levels from the Geometry Dash server (no window code)
 tools/make_test_level.py   builds levels/test_level.gmd (+ .gdr2 / .json replay)
 tools/make_level_pack.py   builds and rates the 13-level pack
 tools/canvas_svg.py        dumps a Tk canvas to SVG (used to look at screens while building them)
@@ -569,14 +610,21 @@ and another simulator. Treat "frame-accurate" as a goal, not a claim.
   a switch (gd-sim: not), and wave -> cube / UFO halves or quarters the wave's velocity
   (gd-sim uses different factors).
 - A few 2.x objects use an assumed hitbox (same as their 1.x sibling): robot, spider and
-  swing portals, gravity-toggle portal, red and spider pads, dash and spider orbs. The
-  import report says how many such objects a level has.
+  swing portals, gravity-toggle portal, dual portals, red and spider pads, dash and
+  spider orbs. The import report says how many such objects a level has.
+- **Dual mode is an estimate.** No decompilation I could find covers it, so it is built
+  from how the game plays: the dual portal (286) adds a second icon at the same spot with
+  the opposite gravity, the play area gets a floor and a ceiling like a flying mode's
+  (300 units for cube and robot), one button controls both icons, losing either ends the
+  attempt, and portals change only the icon that touches them; the other dual portal
+  (287) removes the second icon. Exact spawn position, bounds and how GD treats portals
+  in dual are unverified.
 
 **Not implemented**
 
 - Triggers of every kind (move, rotate, toggle, spawn, alpha...). Moving objects stay
   put and toggled-off objects stay solid. Groups are parsed but unused.
-- Dual mode / player 2, platformer mode, reverse gameplay, time warp, gravity and force
+- Two-player mode (dual with a separate button per icon), platformer mode, reverse gameplay, time warp, gravity and force
   triggers/blocks, teleport portals and orbs, toggle/custom orbs, D/J/S/H/F blocks,
   coins and collectibles, checkpoints, start positions (ignored).
 - **Object coverage.** Only IDs with a known hitbox are simulated: the blocks, spikes,
@@ -592,7 +640,8 @@ and another simulator. Treat "frame-accurate" as a goal, not a claim.
   Kinds: `solid`, `breakable`, `hazard`, `saw` (`arg` = radius), `slope`, `slope_hazard`.
 - Object keys 99 (multi-activate), 121 (No Touch) and 134 (Passable) are from memory.
   When both `32` and `128/129` scale keys are present, `128/129` win.
-- The viewer is a debug view: flat shapes, no art.
+- The viewer is a debug view: flat shapes, no textures. Portals are drawn in GD's colours
+  as glowing rings (speed portals as chevrons), not with the game's sprites.
 
 ## Licence note
 

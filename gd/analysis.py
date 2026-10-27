@@ -39,7 +39,9 @@ def _signature(sim):
             p.is_jumping, p.jump_unused, p.holding_jump, p.velocity_uncapped, p.robot_boost_charge,
             p.robot_boost_invalidated, p.is_dashing, p.dash_y, p.is_on_slope, p.slope, p.snap_obj,
             p.snap_distance, p.last_flip_tick, p.last_spider_tick, sim.floor, sim.ceiling,
-            len(p.used), len(sim.destroyed))
+            len(p.used), len(sim.destroyed),
+            None if sim.player2 is None else (sim.player2.y, sim.player2.y_vel, sim.player2.mode,
+                                              sim.player2.upside_down, sim.player2.can_jump))
 
 
 def _states_from(events, start):

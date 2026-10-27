@@ -63,6 +63,7 @@ class Simulation:
         self.destroyed = set()            # uids of broken breakable blocks
         self.log = []                     # (tick, text) - what the player touched
         self._launch = None
+        self.player2 = None               # the second icon while dual mode is on
         p = self.player = Player(self)
         p.fix_gravity_bug = lv.fix_gravity_bug
         p.mode = Mode(lv.start_mode)
@@ -80,13 +81,15 @@ class Simulation:
 
     def snapshot(self):
         return (self.tick, self.button, self.finished, set(self.destroyed), self.floor,
-                self.ceiling, self.player.copy(), len(self.log))
+                self.ceiling, self.player.copy(), len(self.log),
+                self.player2.copy() if self.player2 is not None else None)
 
     def restore(self, snap):
         (self.tick, self.button, self.finished, destroyed, self.floor, self.ceiling,
-         player, log_len) = snap
+         player, log_len, player2) = snap
         self.destroyed = set(destroyed)
         self.player = player.copy()
+        self.player2 = player2.copy() if player2 is not None else None
         del self.log[log_len:]
 
     @property
@@ -104,16 +107,25 @@ class Simulation:
         if p.dead or self.finished:
             return
         pressed = bool(pressed)
-        if pressed != self.button:
-            self.button = pressed
-            if pressed:
-                p.push_button()
-            else:
-                p.release_button()
-        p.update(C.DT)
-        self._collide(p)
-        if not p.dead:
-            p.update_rotation(C.DT)
+        changed = pressed != self.button
+        self.button = pressed
+        for q in (p, self.player2):              # in dual mode one button drives both icons
+            if q is None:
+                continue
+            if changed:
+                if pressed:
+                    q.push_button()
+                else:
+                    q.release_button()
+            q.update(C.DT)
+            self._collide(q)
+            if not q.dead:
+                q.update_rotation(C.DT)
+            elif q is not p:                     # losing either icon ends the attempt
+                p.die("the second icon: %s" % q.death_cause)
+                break
+            if p.dead:
+                break
         self.tick += 1
         if not p.dead and p.x >= self.level.end_x:
             self.finished = True
@@ -133,6 +145,39 @@ class Simulation:
         p = self.player
         return (self.tick, p.x, p.y, p.y_vel, int(p.mode), p.speed, p.upside_down, p.mini,
                 p.can_jump, p.dead)
+
+    # ------------------------------------------------------------------ dual mode
+    # ESTIMATE throughout: no decompilation I could find covers dual mode.  What is
+    # modelled is the game as it plays: the dual portal adds a second icon at the same
+    # spot with the opposite gravity, the play area gets a floor and a ceiling like a
+    # flying mode's, one button controls both icons, losing either one ends the attempt,
+    # and portals change only the icon that touches them.
+    def _bounds_around(self, y, mode):
+        bounds = _BOUNDS.get(mode)
+        if bounds is None and self.player2 is not None:
+            bounds = C.BOUNDS_SHIP                      # a cube or robot in dual mode still gets a ceiling
+        if bounds is None:
+            self.floor, self.ceiling = 0.0, None
+        else:
+            self.floor = max(0.0, 30.0 * math.ceil((y - (bounds / 2.0 + 30.0)) / 30.0))
+            self.ceiling = self.floor + bounds
+
+    def _dual(self, p, o):
+        if o.arg and self.player2 is None:
+            q = p.copy()
+            q.upside_down = not p.upside_down
+            q.can_jump = q.on_ground = q.is_jumping = False
+            q.y_vel = 0.0
+            self.player2 = q
+            self._bounds_around(o.y, p.mode)
+            self._note("dual mode on")
+        elif not o.arg and self.player2 is not None:
+            other = self.player2
+            self.player2 = None
+            if p is other:                             # the second icon reached it first: the first goes on
+                self.player.used.add(o.uid)
+            self._bounds_around(o.y, self.player.mode)
+            self._note("dual mode off")
 
     def digest(self, trace):
         """Stable hash of a trace - two runs are identical iff the digests match."""
@@ -282,12 +327,10 @@ class Simulation:
             if p.set_mode(mode):
                 self._note("mode -> %s" % mode.name.lower())
             # gd-sim VehiclePortal.cpp: the play area is re-centred on every mode portal
-            bounds = _BOUNDS.get(mode)
-            if bounds is None:
-                self.floor, self.ceiling = 0.0, None
-            else:
-                self.floor = max(0.0, 30.0 * math.ceil((o.y - (bounds / 2.0 + 30.0)) / 30.0))
-                self.ceiling = self.floor + bounds
+            self._bounds_around(o.y, mode)
+        elif kind == O.PORTAL_DUAL:
+            p.used.add(o.uid)
+            self._dual(p, o)
         elif kind == O.PORTAL_SIZE:
             p.used.add(o.uid)
             if p.mini != o.arg:

@@ -9,7 +9,8 @@ window of its own for `python3 main.py level.gmd`.
 
 Keys   Space / Up / W / click  jump (hold)        Esc or P  pause menu
        R  restart     Z / X  add / remove a practice checkpoint
-       H  hitboxes    O  debug info    T  trail    N  single step    - / =  speed
+       H  hitboxes    O  debug info    F  FPS counter    T  trail    N  single step
+       - / =  speed
 """
 import math
 import sys
@@ -17,10 +18,11 @@ import time
 import tkinter as tk
 
 from . import constants as C
-from . import icons
+from . import icons, settings
 from . import objects as O
 from . import ui
-from .effects import Effects
+from .effects import Effects, blend
+from .fps import FrameStats
 from .macros import InputSequence
 from .player import FLYING, WAVE
 
@@ -162,38 +164,93 @@ class Painter:
         else:
             self._draw_portal(o)
 
-    def _draw_portal(self, o):
+    # ------------------------------------------------------------------ portals
+    portal_bg = BG                       # what portal glows fade into (the game view sets its theme)
+
+    def _ellipse(self, o, rx, ry, dx=0.0, steps=28):
+        """Points of an ellipse around the portal's centre, turned with the portal."""
+        pts = [(o.x + dx + rx * math.cos(2 * math.pi * i / steps), o.y + ry * math.sin(2 * math.pi * i / steps))
+               for i in range(steps)]
+        return self._rot(pts, o.x, o.y, o.rot) if o.rot else pts
+
+    def _portal_colour(self, o):
         k = o.kind
         if k == O.PORTAL_MODE:
-            col = icons.MODE_COLORS[o.arg]
-        elif k == O.PORTAL_GRAVITY:
-            col = {"normal": "#4DC3FF", "flipped": "#FFE14D"}.get(o.arg, "#59E36B")
-        elif k == O.PORTAL_SIZE:
-            col = "#FF7AD9" if o.arg else "#59E36B"
+            return icons.MODE_COLORS[o.arg]
+        if k == O.PORTAL_GRAVITY:
+            return {"normal": "#4DC3FF", "flipped": "#FFE14D"}.get(o.arg, "#59E36B")
+        if k == O.PORTAL_SIZE:
+            return "#FF7AD9" if o.arg else "#59E36B"
+        if k == O.PORTAL_DUAL:
+            return "#FF9F1C" if o.arg else "#3D8BFF"
+        return SPEED_COLORS.get(o.arg, "#ffffff")
+
+    def _draw_portal(self, o):
+        """GD-style portals: a glowing oval ring with a darker frame behind it and what the
+        portal does drawn inside it.  Speed portals are chevrons, one per speed step.
+        Tk has no transparency, so a glow is a few rings blended towards the background."""
+        k, col, z = o.kind, self._portal_colour(o), self.zoom
+        dark = blend(col, "#05070C", 0.8)
+        light = blend(col, "#FFFFFF", 0.5)
+        line = max(1, int(round(2.4 * z)))
+        hw, hh = o.w / 2.0, o.h / 2.0
+        if o.rot and o.rot % 180 == 90:
+            hw, hh = hh, hw                                 # the hitbox was swapped; the art is not
+        if k == O.PORTAL_SPEED:
+            self._draw_speed_portal(o, col, dark, light, line, hh)
         else:
-            col = SPEED_COLORS.get(o.arg, "#ffffff")
-        self._poly(self._box(o), fill="#11172A", outline=col, width=2)
-        z = self.zoom
-        cx, cy = self._wx(o.x), self._wy(o.y)
-        if k == O.PORTAL_MODE:
-            for item in icons.draw_icon(self.cv, o.arg, cx, cy, 9.5 * z):
-                self._track(item)
-            self._text(o.x, o.maxy + 9, icons.MODE_NAMES[o.arg].upper(), col, tags="art")
-        elif k == O.PORTAL_GRAVITY:
-            up = {"normal": -1, "flipped": 1}.get(o.arg, 0)
-            if up:
-                self._poly([(o.x - 9, o.y - 8 * up), (o.x + 9, o.y - 8 * up), (o.x, o.y + 12 * up)], fill=col, outline="")
+            rx, ry = hw * 0.62 + 4, hh + 2
+            for i, t in ((3, 0.86), (2, 0.74), (1, 0.6)):                       # glow
+                self._poly(self._ellipse(o, rx + 3 * i, ry + 4 * i), fill=blend(col, self.portal_bg, t), outline="",
+                           tags="art")
+            self._poly(self._ellipse(o, rx * 0.95, ry * 0.98, dx=rx * 0.42), fill=blend(col, "#000000", 0.55),
+                       outline=blend(col, "#000000", 0.3), width=1, tags="art")    # the frame behind the ring
+            self._poly(self._ellipse(o, rx, ry), fill=dark, outline=col, width=line)
+            self._poly(self._ellipse(o, rx - 4, ry - 6), fill="", outline=light, width=1, tags="art")
+            cx, cy = self._wx(o.x), self._wy(o.y)
+            if k == O.PORTAL_MODE:
+                for item in icons.draw_icon(self.cv, o.arg, cx, cy, 9.5 * z):
+                    self._track(item)
+                self._text(o.x, o.maxy + 11, icons.MODE_NAMES[o.arg].upper(), col, tags="art")
+            elif k == O.PORTAL_DUAL:                    # two icons, one upside down - or just one
+                pairs = ((cy - 13 * z, False), (cy + 13 * z, True)) if o.arg else ((cy, False),)
+                for iy, flipped in pairs:
+                    for item in icons.draw_icon(self.cv, 0, cx, iy, 7.5 * z, flipped=flipped,
+                                                colour=light if flipped else col):
+                        self._track(item)
+                self._text(o.x, o.maxy + 11, "DUAL" if o.arg else "DUAL OFF", col, tags="art")
+            elif k == O.PORTAL_GRAVITY:
+                up = {"normal": -1, "flipped": 1}.get(o.arg, 0)
+                arrows = ((o.y - 9 * up, up),) if up else ((o.y + 11, 1), (o.y - 11, -1))
+                for base, d in arrows:
+                    pts = [(o.x - 8, base - 6 * d), (o.x + 8, base - 6 * d), (o.x, base + 10 * d)]
+                    self._poly(self._rot(pts, o.x, o.y, o.rot) if o.rot else pts, fill=light, outline=col, width=1)
+                self._text(o.x, o.maxy + 11, "GRAVITY", col, tags="art")
             else:
-                self._poly([(o.x - 8, o.y + 4), (o.x + 8, o.y + 4), (o.x, o.y + 16)], fill=col, outline="")
-                self._poly([(o.x - 8, o.y - 4), (o.x + 8, o.y - 4), (o.x, o.y - 16)], fill=col, outline="")
-            self._text(o.x, o.maxy + 9, "GRAVITY", col, tags="art")
-        elif k == O.PORTAL_SIZE:
-            half = 5 if o.arg else 10
-            self._rect(o.x - half, o.x + half, o.y - half, o.y + half, fill=col, outline="")
-            self._text(o.x, o.maxy + 9, "MINI" if o.arg else "NORMAL", col, tags="art")
-        else:
-            self._text(o.x, o.y, C.SPEED_NAMES[o.arg], col, size=10)
-            self._text(o.x, o.maxy + 9, "SPEED", col, tags="art")
+                half = 4 if o.arg else 9
+                self._rect(o.x - half, o.x + half, o.y - half, o.y + half, fill=light, outline=col, width=1)
+                self._text(o.x, o.maxy + 11, "MINI" if o.arg else "NORMAL", col, tags="art")
+        self._poly(self._box(o), fill="", outline=HIT_SPECIAL, width=1, tags="hit")
+
+    def _draw_speed_portal(self, o, col, dark, light, line, hh):
+        count = {0: 1, 1: 1, 2: 2, 3: 3, 4: 4}.get(o.arg, 1)
+        back = o.arg == 0                                   # the slow portal points backwards
+        size = hh * 0.9
+        step, thick = size * 0.55, size * 0.38
+        width = step * (count - 1) + size * 0.75
+        for i, t in ((2, 0.84), (1, 0.68)):                 # glow
+            self._poly(self._ellipse(o, width / 2 + 6 * i + 4, size + 4 * i), fill=blend(col, self.portal_bg, t),
+                       outline="", tags="art")
+        x0 = o.x - width / 2.0
+        for n in range(count):
+            left = x0 + n * step
+            tip = left + size * 0.75
+            pts = [(left, o.y + size), (left + thick, o.y + size), (tip, o.y), (left + thick, o.y - size),
+                   (left, o.y - size), (tip - thick, o.y)]
+            if back:
+                pts = [(2 * o.x - x, y) for x, y in pts]
+            self._poly(self._rot(pts, o.x, o.y, o.rot) if o.rot else pts, fill=col, outline=light, width=1)
+        self._text(o.x, o.maxy + 11, C.SPEED_NAMES[o.arg], col, tags="art")
 
 
 class GameView(Painter):
@@ -205,12 +262,16 @@ class GameView(Painter):
         self.zoom = zoom
         self.show_hit = show_hitboxes
         self.show_debug = debug
+        self.show_fps = settings.get("show_fps")      # remembered between levels and sessions
+        self.frames = FrameStats()
+        self.fps_next = 0.0                           # when the FPS text is next refreshed
         self.show_trail = False
         self.practice = practice and inputs is None
         self.progress = progress if inputs is None else None      # a bot's run never counts
         self.key = key
         self.on_exit = on_exit
         self.bg = THEMES.get(theme, BG)
+        self.portal_bg = self.bg
         self.paused = False
         self.panel = None                     # None, "pause" or "complete"
         self.rate = 1.0
@@ -230,6 +291,7 @@ class GameView(Painter):
         self.checkpoints = []                 # practice: [snapshot, x, y, quick deaths, inputs so far]
         self.last_checkpoint_tick = 0
         self.sprite = None
+        self.sprite2 = None                   # the second icon in dual mode
         self.running = False
         self._counted = False
         self._pending_release = None
@@ -301,6 +363,7 @@ class GameView(Painter):
         self.it_title = cv.create_text(0, 0, anchor="nw", fill=ui.MUTED, font=ui.font(12), tags="hud")
         self.it_tag = cv.create_text(0, 0, anchor="ne", fill=ui.CYAN, font=ui.font(12, True), tags="hud")
         self.it_debug = cv.create_text(0, 0, anchor="nw", fill="#D5DBE8", font=(ui.MONO, 11), tags="hud")
+        self.it_fps = cv.create_text(0, 0, anchor="ne", fill="#D5DBE8", font=(ui.MONO, 12, "bold"), tags="hud")
         self.it_msg = cv.create_text(0, 0, anchor="center", fill="#FFFFFF", font=ui.font(22, True), tags="hud")
         self.it_hint = cv.create_text(0, 0, anchor="s", fill=ui.MUTED, font=ui.font(11), tags="hud")
 
@@ -341,6 +404,8 @@ class GameView(Painter):
             self._apply_hitbox_visibility()
         elif k == "o":
             self._toggle("show_debug")
+        elif k == "f":
+            self.toggle_fps()
         elif k == "t":
             self._toggle("show_trail")
         elif k == "z":
@@ -402,6 +467,7 @@ class GameView(Painter):
         self.paused = False
         self._hide_panel()
         self.last = time.perf_counter()
+        self.frames.reset()                           # the paused stretch is not what the game runs like
 
     def _hide_panel(self):
         self.panel = None
@@ -413,7 +479,7 @@ class GameView(Painter):
         cv.delete("panel")
         self.panel = kind
         left, top = cv.canvasx(0), cv.canvasy(0)
-        pw, ph = 380, (396 if kind == "pause" else 330)
+        pw, ph = 380, (446 if kind == "pause" else 330)
         x0, y0 = left + (self.w - pw) / 2.0, top + (self.h - ph) / 2.0
         ui.rounded(cv, x0 - 3, y0 - 3, x0 + pw + 3, y0 + ph + 3, 20, fill="#05070C", outline="", tags="panel")
         ui.rounded(cv, x0, y0, x0 + pw, y0 + ph, 18, fill=ui.PANEL, outline=ui.LINE, tags="panel")
@@ -436,7 +502,8 @@ class GameView(Painter):
                 button(2, "Watching the bot", lambda: None, enabled=False)
             button(3, "Hitboxes: %s" % on(self.show_hit), self._panel_toggle_hit, key="H")
             button(4, "Debug info: %s" % on(self.show_debug), lambda: self._panel_toggle("show_debug"), key="O")
-            button(5, "Exit level", self.exit, "danger", "Q")
+            button(5, "FPS counter: %s" % on(self.show_fps), self.toggle_fps, key="F")
+            button(6, "Exit level", self.exit, "danger", "Q")
         else:
             title = "Practice complete!" if self.practice else "Level complete!"
             lines = [("Time", "%.2f s" % sim.time), ("Attempts", str(self.attempt)), ("Jumps", str(self.jumps))]
@@ -453,6 +520,13 @@ class GameView(Painter):
             ui.Button(cv, x0 + 30, y0 + ph - 66, pw - 60, 46, "Continue", self.exit, "primary", 15, "Enter",
                       tags=("panel",))
         cv.tag_raise("panel")
+
+    def toggle_fps(self):
+        self.show_fps = not self.show_fps
+        settings.put("show_fps", self.show_fps)
+        self.fps_next = 0.0
+        if self.panel == "pause":
+            self._show_panel("pause")
 
     def _panel_toggle(self, name):
         self._toggle(name)
@@ -613,6 +687,7 @@ class GameView(Painter):
             return
         now = time.perf_counter()
         dt, self.last = now - self.last, now
+        self.frames.add(now, dt)                      # measured whether or not the counter is shown
         self.frame_dt = 0.0 if (self.paused or self.panel) else min(dt, 0.1) * self.rate
         sim = self.sim
         if not self.paused and self.panel is None:
@@ -637,6 +712,30 @@ class GameView(Painter):
                     self.restart()
         self._draw(now)
         self.cv.after(5, self._frame)
+
+    def _draw_second(self, q, z):
+        """Dual mode: the second icon (and its two boxes when hitboxes are shown)."""
+        cv = self.cv
+        if q is None:
+            if self.sprite2 is not None:
+                self.sprite2.destroy()
+                self.sprite2 = None
+                cv.delete("p2hit")
+            return
+        mode = int(q.mode)
+        if self.sprite2 is None or self.sprite2.mode != mode:
+            if self.sprite2 is not None:
+                self.sprite2.destroy()
+            self.sprite2 = icons.IconSprite(cv, mode)
+        self.sprite2.place(self._wx(q.x), self._wy(q.y), 15.0 * (C.MINI_SCALE if q.mini else 1.0) * z,
+                           q.rotation, q.upside_down)
+        self.sprite2.set_colour("#FF4D4D" if q.dead else blend(icons.MODE_COLORS[mode], "#FFFFFF", 0.35))
+        cv.delete("p2hit")
+        if self.show_hit:
+            for rect, colour in ((q.outer_rect(), HIT_HAZARD), (q.inner_rect(), HIT_SOLID)):
+                minx, maxx, miny, maxy = rect
+                cv.create_rectangle(self._wx(minx), self._wy(maxy), self._wx(maxx), self._wy(miny), outline=colour,
+                                    width=2, tags=("hit", "phit", "p2hit"))
 
     def _draw(self, now):
         sim, p, cv, z = self.sim, self.sim.player, self.cv, self.zoom
@@ -688,6 +787,7 @@ class GameView(Painter):
             for x, y in p.oriented_box():
                 flat += [self._wx(x), self._wy(y)]
             cv.coords(self.it_rot, *flat)
+        self._draw_second(sim.player2, z)
 
         if self.show_trail and len(self.trail) >= 2:
             flat = []
@@ -714,6 +814,12 @@ class GameView(Painter):
         if self.rate != 1.0:
             tag += "   x%.3g" % self.rate
         cv.itemconfigure(self.it_tag, text=tag)
+        cv.coords(self.it_fps, left + w - 16, top + (34 if tag else 12))
+        if not self.show_fps:
+            cv.itemconfigure(self.it_fps, text="")
+        elif now >= self.fps_next:                    # four times a second: readable, not flickering
+            self.fps_next = now + 0.25
+            cv.itemconfigure(self.it_fps, text=self.frames.text(now))
 
         if self.show_debug:
             vy = p.y_vel * C.VEL_TO_UNITS_PER_SEC

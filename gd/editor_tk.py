@@ -12,6 +12,7 @@ existed, the old version is copied to savedata/backups/ in that folder first.
 
 Mouse   left click / drag   place the selected object (snaps to the grid)
         right click / drag  erase            (also: Shift + left, or the Erase tool)
+        Select tool (S)     click / drag a box to select, drag a selection to move it
         Alt/Option + click  pick the object under the cursor as the brush
         wheel / trackpad    scroll           (arrow keys and A / D also scroll)
         Space + drag        pan
@@ -19,6 +20,8 @@ Keys    R rotate   F flip X   V flip Y   E erase tool   G half grid   H hitboxes
         1-9, 0 pick a tile   Tab next tab   - / = zoom   Home / End   ? help
         P play   B watch the bot   Ctrl/Cmd + O / N / Z, Shift+Z redo
         Ctrl/Cmd + W close the editor   Ctrl/Cmd + S save right now
+Select  S select tool   arrows nudge   R turn   Delete remove   Ctrl/Cmd + C / V / D / A
+        copy, paste (where the mouse is), duplicate, select all   Esc deselect
 """
 import os
 import shutil
@@ -50,6 +53,13 @@ HELP = """Building
   R   F   V                rotate 90,  flip X,  flip Y
   1 - 9, 0                 choose a tile          Tab   next tab
   G                        half grid (15 units)
+
+Selecting (S: the Select tool)
+  click, Shift + click     select one, add / remove one
+  drag over empty space    select everything in the box
+  drag a selected object   move the selection (snaps to the grid)
+  arrows   R   Delete      nudge one cell,  turn 90,  remove
+  Cmd/Ctrl + C, V, D, A    copy, paste at the mouse, duplicate, select all
 
 Moving around
   wheel / trackpad, arrows, A / D        scroll
@@ -96,6 +106,12 @@ class Editor(Painter):
         self.note = "Pick an object below, then click in the level to place it.   Press ? for all shortcuts."
         self._stroke = None
         self._pan = None
+        self.selected = []                           # objects picked with the Select tool
+        self._sel_uids = set()
+        self._title = ""
+        self.clipboard = []                          # raw copies, for paste
+        self._sel = None                             # a select-tool drag in progress
+        self._mouse = None                           # where the mouse last was, in level units
         self._space = False
         self._drawn = set()
         self.save_error = ""                         # why the last save failed ("" = it worked)
@@ -208,10 +224,12 @@ class Editor(Painter):
         w = max(cv.winfo_width(), 900)
         # --- tools (left)
         cv.create_text(14, 16, text="TOOL", anchor="w", fill=ui.MUTED, font=ui.font(10, True))
-        ui.Button(cv, 12, 28, 84, 36, "Build", lambda: self._set_tool("place"),
-                  "primary" if self.tool == "place" else "quiet", 13, radius=8)
-        ui.Button(cv, 102, 28, 84, 36, "Erase", lambda: self._set_tool("erase"),
-                  "danger" if self.tool == "erase" else "quiet", 13, "E", radius=8)
+        ui.Button(cv, 12, 28, 56, 36, "Build", lambda: self._set_tool("place"),
+                  "primary" if self.tool == "place" else "quiet", 12, radius=8)
+        ui.Button(cv, 71, 28, 56, 36, "Select", lambda: self._set_tool("select"),
+                  "accent" if self.tool == "select" else "quiet", 12, radius=8)
+        ui.Button(cv, 130, 28, 56, 36, "Erase", lambda: self._set_tool("erase"),
+                  "danger" if self.tool == "erase" else "quiet", 12, radius=8)
         ui.Button(cv, 12, 70, 174, 30, "Rotate: %d degrees" % self.rot, self._rotate, "normal", 12, "R", radius=8)
         ui.Button(cv, 12, 106, 84, 30, "Flip X", lambda: self._flip("flip_x"), "accent" if self.flip_x else "quiet",
                   12, "F", radius=8)
@@ -265,6 +283,11 @@ class Editor(Painter):
                 cv.create_polygon(mx - 13, my + (8 * up if len(ups) == 1 else -off + 3 * up) , mx + 13,
                                   my + (8 * up if len(ups) == 1 else -off + 3 * up), mx,
                                   my - (14 * up if len(ups) == 1 else off + 13 * up), fill=col, outline="", tags=tag)
+        elif kind == O.PORTAL_DUAL:                     # two icons, one upside down - or one
+            pairs = ((my - 12, False), (my + 12, True)) if ghost.phys.arg else ((my, False),)
+            colour = "#FF9F1C" if ghost.phys.arg else "#3D8BFF"
+            for iy, flipped in pairs:
+                icons.draw_icon(cv, 0, mx, iy, 9, flipped=flipped, colour=colour, tags=tag)
         elif kind == O.PORTAL_SIZE:
             half = 7 if ghost.phys.arg else 16
             cv.create_rectangle(mx - half, my - half, mx + half, my + half, fill="#FF7AD9" if ghost.phys.arg else "#59E36B",
@@ -323,10 +346,15 @@ class Editor(Painter):
         def key(seq, fn):
             root.bind_class(KEYS, seq, lambda e: fn())
 
-        key("<Left>", lambda: self._scroll(-120, 0))
-        key("<Right>", lambda: self._scroll(120, 0))
-        key("<Up>", lambda: self._scroll(0, -90))
-        key("<Down>", lambda: self._scroll(0, 90))
+        key("<Left>", lambda: self.nudge(-1, 0))
+        key("<Right>", lambda: self.nudge(1, 0))
+        key("<Up>", lambda: self.nudge(0, 1))
+        key("<Down>", lambda: self.nudge(0, -1))
+        key("s", lambda: self._set_tool("place" if self.tool == "select" else "select"))
+        key("<Delete>", self.delete_selection)
+        key("<BackSpace>", self.delete_selection)
+        for seq, fn in (("c", self.copy), ("v", self.paste), ("d", self.duplicate), ("a", self.select_all)):
+            root.bind_class(KEYS, "<%s-%s>" % (MOD, seq), lambda e, f=fn: (f(), "break")[1])
         key("a", lambda: self._scroll(-240, 0))
         key("d", lambda: self._scroll(240, 0))
         key("<Home>", lambda: self._goto(0.0))
@@ -367,7 +395,7 @@ class Editor(Painter):
 
     def _set_space(self, down):
         self._space = down
-        self.cv.configure(cursor="fleur" if down else ("crosshair" if self.tool == "place" else "X_cursor"))
+        self.cv.configure(cursor="fleur" if down else {"place": "crosshair", "select": "arrow"}.get(self.tool, "X_cursor"))
 
     # ------------------------------------------------------------------ coordinates
     def _world(self, e):
@@ -413,6 +441,7 @@ class Editor(Painter):
         half = 15.0 * (C.MINI_SCALE if st["mini"] else 1.0)
         icons.draw_icon(cv, st["mode"] if 0 <= st["mode"] <= 7 else 0, 0, -half * z, half * z, flipped=st["flipped"],
                         tags="startmark")
+        self._cull()
         self._update_scrollbar(w)
         if self.help_open:
             self._draw_help()
@@ -442,31 +471,63 @@ class Editor(Painter):
             if z >= 1.5:
                 self.cv.create_text(obj.x * z, -(obj.y + 12) * z, text=str(obj.id), fill="#6B7280",
                                     font=ui.font(8), tags=(tag,))
+        self.cv.addtag_withtag("obj", tag)
+        if obj.uid in self._sel_uids:
+            self.cv.addtag_withtag("selitem", tag)
+
+    # Only what is on screen (and a screen's width either side) is on the canvas: a Tk
+    # canvas slows down with every item it holds, so a 25,000-object level would lag.
+    def _visible_x(self):
+        w = max(self.cv.winfo_width(), 10)
+        z = self.zoom
+        return (self.left - w) / z - 40.0, (self.left + 2 * w) / z + 40.0
+
+    def _cull(self):
+        x0, x1 = self._visible_x()
+        wanted = {o.uid: o for o in self.doc.near(x0, x1)}
+        for uid in self._drawn - wanted.keys():
+            self.cv.delete("u%d" % uid)
+        for uid in wanted.keys() - self._drawn:
+            self._draw(wanted[uid])
+        self._drawn = set(wanted)
+        self._apply_hit()
+        self.cv.tag_lower("grid")
+        self.cv.tag_raise("startmark")
+        self._draw_selection()
 
     def refresh_all(self):
         self.cv.delete("all")
         self._drawn = set()
-        for obj in self.doc.objects:
-            self._draw(obj)
-            self._drawn.add(obj.uid)
-        self._apply_hit()
-        self._view_changed()
+        self.doc.take_changes()
+        self.selected = self.doc.alive(self.selected)
+        self._sel_uids = {o.uid for o in self.selected}
+        self._view_changed()                      # draws the grid, then what is on screen
         self._sync_start_widgets()
         self._draw_top()
         self._draw_bar()
         self._status()
 
     def _sync_objects(self):
-        """Bring the canvas in line with the document after an edit, undo or redo."""
-        wanted = {o.uid: o for o in self.doc.objects}
-        for uid in self._drawn - set(wanted):
-            self.cv.delete("u%d" % uid)
-        for uid in set(wanted) - self._drawn:
-            self._draw(wanted[uid])
-        self._drawn = set(wanted)
-        self._apply_hit()
-        self.cv.tag_lower("grid")
-        self.cv.tag_raise("startmark")
+        """Bring the canvas in line with the document after an edit, undo or redo: only
+        what changed is redrawn (the document keeps the list)."""
+        changes = self.doc.take_changes()
+        self.selected = self.doc.alive(self.selected)
+        self._sel_uids = {o.uid for o in self.selected}
+        if changes is None:                         # undo, redo, loading: compare what is drawn with the level
+            self._cull()
+        else:
+            x0, x1 = self._visible_x()
+            for kind, o in changes:
+                if kind == "remove":
+                    if o.uid in self._drawn:
+                        self.cv.delete("u%d" % o.uid)
+                        self._drawn.discard(o.uid)
+                elif x0 <= o.x <= x1 and o.uid not in self._drawn:
+                    self._draw(o)
+                    self._drawn.add(o.uid)
+            self._apply_hit()
+            self.cv.tag_raise("startmark")
+            self._draw_selection()
         self._status()
 
     def _apply_hit(self):
@@ -489,7 +550,10 @@ class Editor(Painter):
         else:
             saved = "Autosave is on"
         self.status.configure(text="      ".join([saved] + parts), fg=ui.RED if self.save_error else ui.MUTED)
-        self.root.title("Level editor - %s" % self.doc.name)
+        title = "Level editor - %s" % self.doc.name
+        if title != self._title:
+            self._title = title
+            self.root.title(title)
 
     def _say(self, text):
         self.note = text
@@ -516,14 +580,20 @@ class Editor(Painter):
     def _escape(self):
         if self.help_open:
             self.toggle_help()
+        elif self.selected:
+            self._set_selection([])
         else:
             self._set_tool("place")
 
     # ------------------------------------------------------------------ mouse
     def _motion(self, e):
         wx, wy = self._world(e)
+        self._mouse = (wx, wy)
         self.cv.delete("ghost")
         if self.help_open:
+            return
+        if self.tool == "select":
+            self._status("column %d, row %d" % (wx // GRID, wy // GRID))
             return
         z = self.zoom
         x, y, cx, cy = self._brush_position(wx, wy)
@@ -550,12 +620,17 @@ class Editor(Painter):
         if self._space:
             self._pan = (e.x, e.y, self.left, self.top)
             return
+        if self.tool == "select" and not erase:
+            self._select_press(e)
+            return
         self._stroke = "erase" if (erase or self.tool == "erase") else "place"
         self.doc.begin_stroke()
         self._apply_stroke(e)
 
     def _drag(self, e):
-        if self._pan:
+        if self._sel:
+            self._select_drag(e)
+        elif self._pan:
             px, py, left, top = self._pan
             self.left, self.top = left - (e.x - px), top - (e.y - py)
             self._view_changed()
@@ -577,6 +652,8 @@ class Editor(Painter):
 
     def _end_stroke(self, _e):
         self._pan = None
+        if self._sel:
+            self._select_release()
         if self._stroke:
             self._stroke = None
             self._view_changed()                 # the finish line may have moved
@@ -620,6 +697,10 @@ class Editor(Painter):
         self._draw_bar()
 
     def _rotate(self):
+        if self.tool == "select" and self.selected:
+            self._set_selection(self.doc.turn(self.selected))
+            self._sync_objects()
+            return
         self.rot = (self.rot + 90.0) % 360.0
         self._draw_bar()
 
@@ -629,10 +710,156 @@ class Editor(Painter):
 
     def _set_tool(self, tool):
         self.tool = tool
-        self.cv.configure(cursor="crosshair" if tool == "place" else "X_cursor")
+        self.cv.configure(cursor={"place": "crosshair", "select": "arrow"}.get(tool, "X_cursor"))
+        self.cv.delete("ghost")
+        if tool != "select":
+            self._set_selection([])
         self._draw_bar()
-        self._say("Erasing: click or drag over objects.   E or Esc goes back to building." if tool == "erase"
-                  else "Placing: %s." % describe(self.brush))
+        if tool == "erase":
+            self._say("Erasing: click or drag over objects.   E or Esc goes back to building.")
+        elif tool == "select":
+            self._say("Selecting: click an object or drag a box around several.   ? lists what you can do with them.")
+        else:
+            self._say("Placing: %s." % describe(self.brush))
+
+    # ------------------------------------------------------------------ the select tool
+    def _set_selection(self, objs):
+        seen, self.selected = set(), []
+        for o in self.doc.alive(objs):
+            if o.uid not in seen:
+                seen.add(o.uid)
+                self.selected.append(o)
+        self._sel_uids = seen
+        cv = self.cv
+        cv.dtag("selitem", "selitem")                  # one tag on every selected item on screen: a drag
+        for uid in seen & self._drawn:                 # then moves them all with a single canvas call
+            cv.addtag_withtag("selitem", "u%d" % uid)
+        self._draw_selection()
+        if self.tool == "select":
+            n = len(self.selected)
+            self._say("%d object%s selected.   Drag to move, arrows nudge, R turns, Delete removes, "
+                      "Cmd/Ctrl + C / V / D copy, paste, duplicate." % (n, "" if n == 1 else "s") if n else
+                      "Selecting: click an object or drag a box around several.   ? lists what you can do with them.")
+
+    def _draw_selection(self):
+        cv, z = self.cv, self.zoom
+        cv.delete("sel")
+        if not self._sel_uids:
+            return
+        x0, x1 = self._visible_x()
+        for o in self.doc.near(x0, x1):                # outlines only where they can be seen
+            if o.uid not in self._sel_uids:
+                continue
+            minx, maxx, miny, maxy = o.bounds()
+            cv.create_rectangle(minx * z - 2, -maxy * z - 2, maxx * z + 2, -miny * z + 2, outline=ui.CYAN,
+                                width=2, dash=(4, 2), tags="sel")
+        cv.tag_raise("sel")
+
+    def _snap(self, value):
+        return round(value / self.grid) * self.grid
+
+    def _select_press(self, e):
+        wx, wy = self._world(e)
+        add = bool(e.state & 0x1)                          # Shift
+        hit = self.doc.pick(wx, wy)
+        if hit is not None:
+            if add:
+                chosen = [o for o in self.selected if o.uid != hit.uid]
+                if len(chosen) == len(self.selected):
+                    chosen.append(hit)
+                self._set_selection(chosen)
+            elif hit not in self.selected:
+                self._set_selection([hit])
+            self._sel = {"kind": "move", "start": (wx, wy), "shown": (0.0, 0.0)}
+        else:
+            self._sel = {"kind": "box", "start": (wx, wy), "keep": list(self.selected) if add else []}
+            if not add:
+                self._set_selection([])
+
+    def _select_drag(self, e):
+        wx, wy = self._world(e)
+        sx, sy = self._sel["start"]
+        cv, z = self.cv, self.zoom
+        if self._sel["kind"] == "move":
+            if not self.selected:
+                return
+            dx, dy = self._snap(wx - sx), self._snap(wy - sy)
+            ox, oy = self._sel["shown"]
+            if (dx, dy) != (ox, oy):                       # slide what is on screen; the level changes on release
+                cv.move("selitem", (dx - ox) * z, -(dy - oy) * z)
+                cv.move("sel", (dx - ox) * z, -(dy - oy) * z)
+                self._sel["shown"] = (dx, dy)
+        else:
+            cv.delete("selbox")
+            cv.create_rectangle(sx * z, -sy * z, wx * z, -wy * z, outline=ui.CYAN, dash=(3, 3), tags="selbox")
+
+    def _select_release(self):
+        sel, self._sel = self._sel, None
+        self.cv.delete("selbox")
+        if sel["kind"] == "move":
+            dx, dy = sel["shown"]
+            if dx or dy:
+                self._set_selection(self.doc.move(self.selected, dx, dy))
+                self._sync_objects()
+                self._view_changed()
+            return
+        sx, sy = sel["start"]
+        wx, wy = self._mouse or (sx, sy)
+        if abs(wx - sx) < 2 and abs(wy - sy) < 2:          # a click on empty space just deselects
+            self._set_selection(sel["keep"])
+            return
+        found = self.doc.inside(min(sx, wx), max(sx, wx), min(sy, wy), max(sy, wy))
+        self._set_selection(sel["keep"] + found)
+
+    def nudge(self, dx, dy):
+        """Arrow keys: move the selection one grid step, or scroll when nothing is selected."""
+        if self.tool == "select" and self.selected:
+            self._set_selection(self.doc.move(self.selected, dx * self.grid, dy * self.grid))
+            self._sync_objects()
+        else:
+            self._scroll(dx * 120, -dy * 90)
+
+    def delete_selection(self):
+        if self.selected and self.doc.remove(self.selected):
+            n = len(self.selected)
+            self._set_selection([])
+            self._sync_objects()
+            self._say("Removed %d object%s.   Cmd/Ctrl + Z brings %s back." % (n, "" if n == 1 else "s",
+                                                                             "it" if n == 1 else "them"))
+
+    def select_all(self):
+        self._set_tool("select")
+        self._set_selection(list(self.doc.objects))
+
+    def copy(self):
+        if self.selected:
+            self.clipboard = [dict(o.raw) for o in self.selected]
+            self._say("Copied %d object%s.   Cmd/Ctrl + V pastes them where the mouse is." %
+                      (len(self.clipboard), "" if len(self.clipboard) == 1 else "s"))
+
+    def paste(self):
+        if not self.clipboard:
+            return
+        xs = [float(r.get(2, 0)) for r in self.clipboard]
+        ys = [float(r.get(3, 0)) for r in self.clipboard]
+        if self._mouse is not None:                        # the copied group's corner goes to the mouse
+            dx, dy = self._snap(self._mouse[0] - min(xs)), self._snap(self._mouse[1] - min(ys))
+        else:
+            dx, dy = self._snap(max(xs) - min(xs)) + GRID, 0.0
+        self._set_tool("select")
+        self._set_selection(self.doc.paste(self.clipboard, dx, dy))
+        self._sync_objects()
+        self._view_changed()
+
+    def duplicate(self):
+        """A copy of the selection right after it."""
+        if not self.selected:
+            return
+        xs = [o.x for o in self.selected]
+        width = self._snap(max(xs) - min(xs)) + GRID
+        self._set_selection(self.doc.paste([dict(o.raw) for o in self.selected], width, 0.0))
+        self._sync_objects()
+        self._view_changed()
 
     def _toggle_grid(self):
         self.grid = GRID / 2 if self.grid == GRID else GRID

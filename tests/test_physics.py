@@ -735,5 +735,73 @@ class FlipGrace(unittest.TestCase):
         self.assertTrue(sim.dead)
 
 
+class DualMode(unittest.TestCase):
+    """Dual portals (286 on, 287 off).  An ESTIMATE of the game - see Simulation._dual."""
+    DUAL_ON, DUAL_OFF = 286, 287
+
+    def level(self, build=None, off_col=40):
+        def b(lv):
+            lv.add(self.DUAL_ON, 315, 45)
+            lv.add(self.DUAL_OFF, 15 + 30 * off_col, 45)
+            if build:
+                build(lv)
+        return make(build=b)
+
+    def test_a_second_icon_with_the_opposite_gravity(self):
+        sim = self.level()
+        run_until(self, sim, lambda s: s.player2 is not None)
+        p, q = sim.player, sim.player2
+        self.assertEqual((q.upside_down, p.upside_down, q.mode, q.x), (True, False, p.mode, p.x))
+        self.assertEqual((sim.floor, sim.ceiling), (0.0, C.BOUNDS_SHIP), "the play area gets a ceiling")
+        run_until(self, sim, lambda s: s.player2.can_jump)          # it falls up and lands on the ceiling
+        self.assertAlmostEqual(q.y, C.BOUNDS_SHIP - 15.0)
+        self.assertIn("dual mode on", [t for _, t in sim.log])
+
+    def test_one_button_drives_both(self):
+        sim = self.level()
+        run_until(self, sim, lambda s: s.player2 is not None and s.player2.can_jump)
+        p, q = sim.player, sim.player2
+        y1, y2 = p.y, q.y
+        steps(sim, 20, pressed=True)
+        self.assertGreater(p.y, y1 + 20, "the first icon jumps up")
+        self.assertLess(q.y, y2 - 20, "the second jumps down, towards its own floor")
+
+    def test_losing_either_icon_ends_the_attempt(self):
+        sim = self.level(lambda lv: lv.spike(20, row=9, down=True) if hasattr(lv, "spike") else
+                         lv.add(SPIKE, 15 + 30 * 20, 285, rot=180))
+        run_until(self, sim, lambda s: s.dead, limit=4000)
+        self.assertTrue(sim.player.dead)
+        self.assertIn("second icon", sim.player.death_cause)
+        self.assertLess(sim.player.x, 30 * 21)
+
+    def test_dual_off(self):
+        sim = self.level(off_col=25)
+        run_until(self, sim, lambda s: s.player2 is not None)
+        run_until(self, sim, lambda s: s.player2 is None)
+        self.assertEqual((sim.floor, sim.ceiling), (0.0, None))
+        self.assertIn("dual mode off", [t for _, t in sim.log])
+        self.assertFalse(sim.dead)
+
+    def test_snapshots_keep_the_second_icon(self):
+        sim = self.level()
+        run_until(self, sim, lambda s: s.player2 is not None)
+        snap = sim.snapshot()
+        y = sim.player2.y
+        steps(sim, 30)
+        sim.restore(snap)
+        self.assertEqual(sim.player2.y, y)
+        sim.reset()
+        self.assertIsNone(sim.player2)
+
+    def test_the_bot_can_play_dual(self):
+        from gd.autoplay import solve
+        sim = self.level(lambda lv: [lv.add(SPIKE, 15 + 30 * 20, 285, rot=180), lv.add(SPIKE, 15 + 30 * 30, 15)])
+        seq = solve(sim, chunk=6, max_nodes=200000)
+        self.assertIsNotNone(seq)
+        sim.reset()
+        sim.run(seq, max_ticks=1600)
+        self.assertFalse(sim.dead, sim.player.death_cause)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

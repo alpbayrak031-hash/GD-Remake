@@ -73,9 +73,12 @@ def solve(sim, chunk=6, max_nodes=600000, progress=None, bucket_y=None, bucket_v
         p = sim.player
         # states that are nearly the same are assumed to have the same fate; that is
         # what keeps the search from re-exploring every hopeless variation
+        q = sim.player2                    # dual mode: the second icon is part of the state too
         key = (sim.tick, round(p.y / bucket_y), round(p.y_vel / bucket_v), int(p.mode),
                p.upside_down, press, p.can_jump, p.jump_unused, p.holding_jump,
-               round(p.rotation / 15.0) % 24 if angled else 0)
+               round(p.rotation / 15.0) % 24 if angled else 0,
+               None if q is None else (round(q.y / bucket_y), round(q.y_vel / bucket_v), int(q.mode),
+                                       q.upside_down, q.can_jump))
         if key in seen:
             continue
         seen.add(key)

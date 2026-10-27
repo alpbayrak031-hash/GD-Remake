@@ -380,13 +380,13 @@ def gmd_document(name, decoded_level_string, creator="gd-remake"):
     return '<?xml version="1.0"?><plist version="1.0" gjver="2.0"><dict>%s</dict></plist>' % body
 
 
-def write_gmd(path, name, decoded_level_string):
+def write_gmd(path, name, decoded_level_string, creator="gd-remake"):
     """Written to a temporary file that is then swapped in, so a crash or a full disk can
     never leave half a level behind (the editor autosaves, so this runs often)."""
     tmp = path + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(gmd_document(name, decoded_level_string))
+            fh.write(gmd_document(name, decoded_level_string, creator))
         os.replace(tmp, path)
     except OSError:
         if os.path.exists(tmp):

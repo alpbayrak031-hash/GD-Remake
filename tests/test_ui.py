@@ -150,9 +150,232 @@ class StartUp(unittest.TestCase):
                 show()
                 app.root.update()
             self.assertGreater(len(app.cv.find_all()), 5, "the menu drew something")
+            self.check_fps_toggle(app)
         finally:
             app.quit()
         self.assertEqual(errors, [])
+
+    def check_fps_toggle(self, app):
+        """F shows and hides the counter in a level, the pause menu has it too, and the
+        choice is remembered for the next level."""
+        import types
+        import time as clock
+        from gd import paths, settings
+        from gd.menu_tk import pack_levels
+        self.assertFalse(settings.get("show_fps"))
+        self.assertTrue(app.play(pack_levels()[0]["path"], save=False))
+        game = app.game
+        press = lambda key: game._key_press(types.SimpleNamespace(keysym=key))
+        end = clock.time() + 0.6
+        while clock.time() < end:                         # let a few frames go by
+            app.root.update()
+            clock.sleep(0.01)
+        self.assertEqual(game.cv.itemcget(game.it_fps, "text"), "")
+        press("f")
+        game._draw(clock.perf_counter())
+        shown = game.cv.itemcget(game.it_fps, "text")
+        self.assertRegex(shown, r"^(\d+|--) FPS    1% low (\d+|--)    1% high (\d+|--)$")
+        self.assertNotEqual(shown.split()[0], "--", "frames were counted")
+        self.assertTrue(settings.get("show_fps"), "remembered")
+        self.assertTrue(os.path.isfile(os.path.join(paths.SAVEDATA, "settings.json")))
+        press("Escape")                                   # the pause menu lists it
+        labels = [game.cv.itemcget(i, "text") for i in game.cv.find_withtag("panel")
+                  if game.cv.type(i) == "text"]
+        self.assertIn("FPS counter: on", labels)
+        press("f")
+        self.assertIn("FPS counter: off", [game.cv.itemcget(i, "text") for i in game.cv.find_withtag("panel")
+                                           if game.cv.type(i) == "text"])
+        game.exit()
+        self.assertFalse(settings.get("show_fps"))
+
+
+class FpsCounter(unittest.TestCase):
+    def feed(self, durations, start=100.0):
+        from gd.fps import FrameStats
+        stats, now = FrameStats(), start
+        for d in durations:
+            now += d
+            stats.add(now, d)
+        return stats, now
+
+    def test_a_steady_frame_rate(self):
+        stats, now = self.feed([1 / 60.0] * 600)
+        s = stats.summary(now)
+        self.assertAlmostEqual(s["fps"], 60.0, places=6)
+        self.assertAlmostEqual(s["low"], 60.0, places=6)
+        self.assertAlmostEqual(s["high"], 60.0, places=6)
+        self.assertEqual(stats.text(now), "60 FPS    1% low 60    1% high 60")
+
+    def test_one_stall_drags_the_one_percent_low_down_but_not_the_average(self):
+        # 899 frames at 100 FPS and one 0.5 s stall (9.5 s in all): the slowest 1% are 9 frames
+        stats, now = self.feed([0.01] * 450 + [0.5] + [0.01] * 449)
+        s = stats.summary(now)
+        self.assertEqual(s["frames"], 900)
+        self.assertAlmostEqual(s["low"], 9 / (0.5 + 8 * 0.01), places=6)      # 15.5 FPS
+        self.assertAlmostEqual(s["high"], 100.0, places=6)
+        self.assertAlmostEqual(s["fps"], 100.0, places=6)                    # the stall was 4.5 s ago
+        self.assertIn("100 FPS    1% low 16    1% high 100", stats.text(now))
+
+    def test_the_fastest_frames_make_the_one_percent_high(self):
+        stats, now = self.feed([0.02] * 198 + [0.005, 0.004])                 # 200 frames: 1% is 2
+        self.assertAlmostEqual(stats.summary(now)["high"], 2 / 0.009, places=6)
+
+    def test_only_the_last_ten_seconds_count(self):
+        stats, now = self.feed([0.5] * 40 + [0.01] * 1500)                     # slow, then 15 s at 100 FPS
+        s = stats.summary(now)
+        self.assertAlmostEqual(s["frames"], 1000, delta=1)                     # (the frame on the edge may count)
+        self.assertAlmostEqual(s["low"], 100.0, places=6)
+
+    def test_too_few_frames_for_one_percent_figures(self):
+        stats, now = self.feed([0.01] * 10)
+        s = stats.summary(now)
+        self.assertEqual((s["low"], s["high"]), (None, None))
+        self.assertEqual(stats.text(now), "100 FPS    1% low --    1% high --")
+        from gd.fps import FrameStats
+        self.assertEqual(FrameStats().text(5.0), "-- FPS    1% low --    1% high --")
+        stats.add(now, 0.0)                                                    # nonsense is ignored
+        stats.add(now, -1.0)
+        self.assertEqual(stats.summary(now)["frames"], 10)
+        stats.reset()
+        self.assertEqual(stats.summary(now)["frames"], 0)
+
+
+class Settings(Temp):
+    def test_remembered_and_safe(self):
+        from gd import settings
+        old = settings._path
+        settings._path = lambda: os.path.join(self.dir, "save", "settings.json")
+        self.addCleanup(setattr, settings, "_path", old)
+        self.assertFalse(settings.get("show_fps"), "off until switched on")
+        settings.put("show_fps", True)
+        self.assertTrue(settings.get("show_fps"))
+        settings.put("show_fps", False)
+        self.assertFalse(settings.get("show_fps"))
+        for junk in ("{ not json", "[]", json.dumps({"show_fps": "yes", "unknown": 1})):
+            with open(settings._path(), "w") as fh:
+                fh.write(junk)
+            self.assertEqual(settings.load(), settings.DEFAULTS)
+
+
+class EditorSelection(unittest.TestCase):
+    """The document side of the editor's Select tool: every change is one undo step and
+    never alters an object in place (the undo history keeps the old ones)."""
+
+    def doc(self):
+        from gd.editor_model import LevelDocument
+        d = LevelDocument()
+        self.a = d.place(1, 45, 15)
+        self.b = d.place(8, 75, 15)
+        self.c = d.place(36, 300, 105)
+        return d
+
+    def where(self, d):
+        return sorted((o.id, o.x, o.y, o.rot) for o in d.objects)
+
+    def test_box_selection(self):
+        d = self.doc()
+        self.assertEqual({o.id for o in d.inside(0, 100, 0, 40)}, {1, 8})
+        self.assertEqual({o.id for o in d.inside(280, 320, 90, 120)}, {36})
+        self.assertEqual(d.inside(500, 600, 0, 40), [])
+
+    def test_move_and_undo(self):
+        d = self.doc()
+        before = self.where(d)
+        moved = d.move([self.a, self.b], 30, 30)
+        self.assertEqual(sorted((o.id, o.x, o.y) for o in moved), [(1, 75.0, 45.0), (8, 105.0, 45.0)])
+        self.assertEqual((self.a.x, self.a.y), (45.0, 15.0), "the original object is untouched")
+        self.assertEqual(len(d.objects), 3)
+        d.undo()
+        self.assertEqual(self.where(d), before)
+        d.redo()
+        self.assertIn((1, 75.0, 45.0, 0.0), self.where(d))
+
+    def test_turn_keeps_a_group_together(self):
+        d = self.doc()
+        turned = d.turn([self.a, self.b])
+        self.assertEqual(sorted((o.id, o.x, o.y, o.rot) for o in turned), [(1, 60.0, 30.0, 90.0), (8, 60.0, 0.0, 90.0)])
+        d.turn(turned)
+        d.undo()
+        d.undo()
+        self.assertEqual(self.where(d), sorted([(1, 45.0, 15.0, 0.0), (8, 75.0, 15.0, 0.0), (36, 300.0, 105.0, 0.0)]))
+
+    def test_four_turns_come_back(self):
+        d = self.doc()
+        objs = [self.a, self.b]
+        for _ in range(4):
+            objs = d.turn(objs)
+        self.assertEqual(sorted((o.id, o.x, o.y, o.rot) for o in objs), [(1, 45.0, 15.0, 0.0), (8, 75.0, 15.0, 0.0)])
+        self.assertTrue(all(6 not in o.raw for o in objs), "a full turn leaves no rotation key behind")
+
+    def test_copy_paste_and_remove(self):
+        d = self.doc()
+        pasted = d.paste([dict(self.a.raw), dict(self.b.raw)], 90, 0)
+        self.assertEqual(sorted((o.id, o.x) for o in pasted), [(1, 135.0), (8, 165.0)])
+        self.assertEqual(len(d.objects), 5)
+        self.assertTrue(d.remove(pasted))
+        self.assertEqual(len(d.objects), 3)
+        self.assertFalse(d.remove(pasted), "already gone")
+        d.undo()
+        self.assertEqual(len(d.objects), 5)
+        d.undo()
+        self.assertEqual(len(d.objects), 3)
+        self.assertEqual(d.paste([], 30, 0), [])
+
+    def test_the_fast_paths_agree_with_a_full_rescan(self):
+        """The document keeps an index, counts and the level's extent up to date as it goes
+        (that is what keeps the editor quick on big levels); after any mix of edits they
+        must say exactly what scanning every object says."""
+        import random
+        from gd.editor_model import LevelDocument
+        d, rng = LevelDocument(), random.Random(3)
+
+        def check():
+            objs = d.objects
+            xs, ys = [o.x for o in objs] or [0.0], [o.y for o in objs] or [0.0]
+            sim = sum(1 for o in objs if o.phys is not None)
+            self.assertEqual(d.counts(), (sim, len(objs) - sim))
+            self.assertEqual(d.extent(), (min(xs), max(xs), min(ys), max(ys)))
+            self.assertEqual({o.uid for o in d.near(500, 900)}, {o.uid for o in objs if 500 <= o.x <= 900})
+            self.assertEqual(d.alive(objs[:5]), objs[:5])
+
+        check()
+        for _ in range(600):
+            r = rng.random()
+            if r < 0.55 or not d.objects:
+                d.place(rng.choice((1, 8, 36, 914, 12)), rng.randrange(0, 3000, 15), rng.randrange(0, 600, 15))
+            elif r < 0.75:
+                d.erase(rng.choice(d.objects))
+            elif r < 0.85:
+                d.move(rng.sample(d.objects, min(3, len(d.objects))), rng.choice((-30, 30)), rng.choice((-15, 0, 15)))
+            elif r < 0.9:
+                d.remove(rng.sample(d.objects, min(2, len(d.objects))))
+            elif r < 0.95:
+                d.undo()
+            else:
+                d.paste([dict(o.raw) for o in d.objects[:2]], 60, 0)
+            check()
+
+    def test_what_changed_is_listed_for_the_editor(self):
+        from gd.editor_model import LevelDocument
+        d = LevelDocument()
+        self.assertIsNone(d.take_changes(), "a fresh document: redraw everything")
+        a = d.place(1, 45, 15)
+        b = d.place(8, 75, 15)
+        self.assertEqual(d.take_changes(), [("add", a), ("add", b)])
+        d.erase(a)
+        moved = d.move([b], 30, 0)
+        self.assertEqual(d.take_changes(), [("remove", a), ("remove", b), ("add", moved[0])])
+        d.undo()
+        self.assertIsNone(d.take_changes(), "undo replaces the whole list")
+        self.assertEqual(d.take_changes(), [])
+
+    def test_new_palette_objects_are_all_simulated(self):
+        from gd import objects as O
+        from gd.editor_model import PALETTE, EdObject
+        for _group, items in PALETTE:
+            for oid, label in items:
+                self.assertIn(oid, O.OBJECTS, label)
+                self.assertIsNotNone(EdObject({1: str(oid), 2: "15", 3: "15"}).phys, label)
 
 
 class Icons(unittest.TestCase):

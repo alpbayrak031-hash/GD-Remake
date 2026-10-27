@@ -20,6 +20,7 @@ SLOPE, SLOPE_HAZARD = "slope", "slope_hazard"
 PAD, ORB = "pad", "orb"
 PORTAL_MODE, PORTAL_GRAVITY, PORTAL_SIZE, PORTAL_SPEED = (
     "portal_mode", "portal_gravity", "portal_size", "portal_speed")
+PORTAL_DUAL = "portal_dual"
 NOOP = "noop"
 
 OBJECTS = {}
@@ -157,14 +158,16 @@ _add(PORTAL_SPEED, 33, 56, (201,), 1)
 _add(PORTAL_SPEED, 51, 56, (202,), 2)
 _add(PORTAL_SPEED, 65, 56, (203,), 3)
 _add(PORTAL_SPEED, 69, 56, (1334,), 4)
+_add(PORTAL_DUAL, 34, 86, (286,), True, "ASSUMED hitbox (same as mode portals); dual mode is an ESTIMATE")
+_add(PORTAL_DUAL, 34, 86, (287,), False, "ASSUMED hitbox (same as mode portals); dual mode is an ESTIMATE")
 _add(NOOP, 0, 0, (45, 46), None, "mirror portal: visual only")
 
 # Known gameplay-relevant IDs that are deliberately NOT simulated.  Listing them
 # only makes the importer's report readable.
 UNSUPPORTED_NAMES = {
     29: "background colour trigger", 30: "ground colour trigger", 31: "start position",
-    32: "enable trail", 33: "disable trail", 142: "secret coin", 286: "dual portal",
-    287: "dual portal (off)", 747: "teleport portal", 749: "teleport portal exit",
+    32: "enable trail", 33: "disable trail", 142: "secret coin",
+    747: "teleport portal", 749: "teleport portal exit",
     899: "colour trigger", 901: "move trigger", 914: "text", 1006: "pulse trigger",
     1007: "alpha trigger", 1049: "toggle trigger", 1268: "spawn trigger",
     1329: "user coin", 1346: "rotate trigger", 1347: "follow trigger",

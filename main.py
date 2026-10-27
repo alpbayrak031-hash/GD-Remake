@@ -163,7 +163,8 @@ def where():
         print("tkinter        NOT AVAILABLE: %s" % exc)
         return 1
     # everything the game imports while running, plus what the importers and the bot need
-    for name in ("gd.menu_tk", "gd.editor_tk", "gd.timing", "gd.share", "gd.macros", "gd.levelio", "hashlib", "zipfile",
+    for name in ("gd.menu_tk", "gd.editor_tk", "gd.timing", "gd.share", "gd.online", "gd.fps", "gd.settings",
+                 "http.client", "urllib.parse", "gd.macros", "gd.levelio", "hashlib", "zipfile",
                  "socket", "ipaddress", "secrets", "tkinter.simpledialog",
                  "gzip", "zlib", "json", "csv", "threading", "subprocess", "tkinter.filedialog",
                  "tkinter.messagebox", "tkinter.font"):
