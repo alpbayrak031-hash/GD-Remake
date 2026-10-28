@@ -108,7 +108,7 @@ def scale_for(level):
     return max(1.0, min(LONGEST, level_seconds(level) / SHORT_LEVEL))
 
 
-def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None, progress=None):
+def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None, progress=None, patience=1):
     """-> (result, InputSequence that finishes the level or None).  The result is one of
           {"state": "ok", "ticks": n, "ms": ms, "capped": bool}   the tightest input is about `ms`;
                                                                    capped: even the coarsest grid worked;
@@ -120,11 +120,12 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None, progres
 
     `wait` is called regularly during the search; it may block or raise Cancelled.
     max_nodes / budget: per attempt / per level; by default the standard ones, scaled up
-    for a long level (scale_for).
+    for a long level (scale_for).  patience multiplies every search budget (the editor's
+    "Continue anyway"); the time budget is then usually lifted too (budget=inf).
     progress(fraction, text): how far the measurement has got (it only goes up, and stops
     at SEARCH_SHARE: the rest is the caller's - the editor uses it to prepare the replay)
     and what it is doing, e.g. (0.58, "trying a 17 ms grid")."""
-    scale = scale_for(level)
+    scale = scale_for(level) * patience
     if max_nodes is None:
         max_nodes = int(MAX_NODES * scale)
     if budget is None:

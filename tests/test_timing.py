@@ -243,6 +243,14 @@ class Replays(unittest.TestCase):
         sim.run(quick)
         self.assertTrue(sim.finished)
 
+    def test_continue_anyway_lifts_the_time_limit(self):
+        level = built(spikes(3)).level()
+        found, seq = timing.search(level, budget=0.0)
+        self.assertEqual(found, {"state": "unsolved", "reason": "time"})
+        found, seq = timing.search(level, patience=8, budget=float("inf"))
+        self.assertEqual(found["state"], "ok")
+        self.assertIsNotNone(seq)
+
     def test_the_search_leaves_the_end_of_the_bar_for_the_replay(self):
         seen = []
         timing.search(built(spikes(2)).level(), progress=lambda f, text: seen.append(f))

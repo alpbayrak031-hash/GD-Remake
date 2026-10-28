@@ -374,6 +374,11 @@ you see the route exactly as the search found it). Whether a moved input still w
 checked against the whole state of the game - the icon's angle, what the triggers have
 done, which objects were used - not just where the icon is.
 
+When the bot gives up - out of time, or nothing found within its search limit - the
+message has a **Continue anyway** button: the bot starts again with no time limit and 8
+times its search budget (64 times the next time, and so on), for long showcase levels
+that need it. It can take many minutes; Stop ends it whenever you like.
+
 A **held jump** is a jump you start by already having the button down when you land: the
 jump then begins by itself on the first step you are back on the ground, a touch more
 exactly than any fresh tap can. A level that only works that way still gets a number:

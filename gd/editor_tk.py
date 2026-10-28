@@ -44,6 +44,7 @@ LEVELS = paths.USER_LEVELS            # where the player's levels are kept (Docu
 BACKUPS = paths.BACKUPS
 AUTOSAVE_MS = 1000            # how often the editor checks for changes to write
 REPLAY_SECONDS = 6.0          # the most "Watch bot" spends making its replay neat (see Editor.bot)
+CONTINUE_FACTOR = 8           # "Continue anyway": this many times the search budget, then 64 times, ...
 MOD = "Command" if sys.platform == "darwin" else "Control"
 ZOOMS = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
 TOP_H, BAR_H, TILE = 56, 150, 62
@@ -1143,8 +1144,10 @@ class Editor(Painter):
         self._status()
         self.host.play_level(self.doc.to_level(), None, self.show_hit)
 
-    def bot(self):
-        """Let the solver try the level (in a thread, so the window stays responsive)."""
+    def bot(self, patience=1):
+        """Let the solver try the level (in a thread, so the window stays responsive).
+        patience > 1 ("Continue anyway"): no time limit, and that many times the search
+        budget - for long, precise levels; the Stop button still ends it."""
         if self.busy:
             return
         self.busy = True
@@ -1171,7 +1174,10 @@ class Editor(Painter):
             from .analysis import Analyzer
             from .timing import SEARCH_SHARE, Cancelled, describe, search
             try:
-                found, seq = search(level, wait=wait, progress=progress)   # the same measurement My Levels shows
+                if patience > 1:
+                    found, seq = search(level, wait=wait, progress=progress, patience=patience, budget=float("inf"))
+                else:
+                    found, seq = search(level, wait=wait, progress=progress)   # the same measurement My Levels shows
                 if seq is None:
                     result["text"] = None
                     result["why"] = found.get("reason")
@@ -1225,18 +1231,52 @@ class Editor(Painter):
             elif result.get("text") is None:
                 self._say("The bot gave up.")
                 if result.get("why") == "time":
-                    messagebox.showinfo("Bot", "The bot ran out of time before finding a way through.\n"
-                                               "That does not mean there is none - the level is long or precise.")
+                    text = ("The bot ran out of time before finding a way through.\n"
+                            "That does not mean there is none - the level is long or precise.")
                 else:
-                    messagebox.showinfo("Bot", "The bot found no way through, even trying every single physics step.\n"
-                                               "The level is most likely impossible as built (very long levels can "
-                                               "also exceed its search limit).")
+                    text = ("The bot found no way through within its search limit, even trying every single "
+                            "physics step.\nThe level may be impossible as built - or, if it is long and hard, "
+                            "simply beyond that limit.")
+                more = patience * CONTINUE_FACTOR
+                text += ("\n\nContinue anyway: keep searching with no time limit and %d times %s search "
+                         "budget. It can take many minutes; Stop ends it at any time." %
+                         (more, "the usual" if patience == 1 else "the first"))
+                if self._ask("Bot", text, "Continue anyway", "Close"):
+                    self.bot(patience=more)
             else:
                 self._say(result["text"])
                 if self.frame.winfo_ismapped():         # still in the editor: show the run
                     self.host.play_level(level, result["replay"], self.show_hit)
 
         self.root.after(150, poll)
+
+    def _ask(self, title, text, yes, no):
+        """A small dialog with two named buttons -> True for `yes`."""
+        win = tk.Toplevel(self.root, bg=ui.PANEL, padx=20, pady=16)
+        win.title(title)
+        win.transient(self.root)
+        win.resizable(False, False)
+        tk.Label(win, text=text, bg=ui.PANEL, fg=ui.TEXT, font=ui.font(13), wraplength=420, justify="left").pack(
+            anchor="w")
+        answer = [False]
+
+        def choose(value):
+            answer[0] = value
+            win.destroy()
+
+        buttons = tk.Frame(win, bg=ui.PANEL)
+        buttons.pack(anchor="e", pady=(14, 0))
+        tk.Button(buttons, text=no, command=lambda: choose(False), highlightbackground=ui.PANEL).pack(side="right",
+                                                                                                    padx=4)
+        tk.Button(buttons, text=yes, command=lambda: choose(True), default="active",
+                  highlightbackground=ui.PANEL).pack(side="right")
+        win.bind("<Return>", lambda e: choose(True))
+        win.bind("<Escape>", lambda e: choose(False))
+        win.update_idletasks()
+        win.geometry("+%d+%d" % (self.root.winfo_rootx() + 160, self.root.winfo_rooty() + 120))
+        win.grab_set()
+        self.root.wait_window(win)
+        return answer[0]
 
     def _draw_bot_progress(self):
         """While the bot works: a panel over the level with how far it has got, what it is
