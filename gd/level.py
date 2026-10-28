@@ -16,6 +16,7 @@ from collections import Counter
 
 from . import objects as O
 from . import triggers as T
+from .deco_table import TABLE as DECO
 from .constants import LEVEL_END_PADDING, MAX_Y, SECTION_SIZE
 from .geometry import obb_corners
 from .levelio import RawLevel, split_level_string
@@ -50,11 +51,32 @@ class GameObject:
         return self.orient in (0, 2)
 
 
+# Colour channels a level does not set itself start with GD's defaults (from memory, and
+# only ever drawn): the object colour and the line white, the player colours green and
+# cyan.  Numbered channels default to white.  "Black" (1010) and "White" (1011) are fixed:
+# whatever a level file stores for them (GRIEF stores white for black), the game draws
+# them black and white.
+# Colour triggers (only drawn): the 2.0 one names its channel (key 23); the 1.x ones
+# each have their own (gddocs object ids and channel numbers; a-zalt gdknowledge for the old ids).
+COLOUR_TRIGGERS = {899: None, 29: 1000, 30: 1001, 104: 1002, 915: 1002, 105: 1004, 744: 1003, 900: 1009,
+                   221: 1, 717: 2, 718: 3, 743: 4}
+DEFAULT_COLOURS = {1002: (255, 255, 255), 1004: (255, 255, 255), 1005: (125, 255, 0), 1006: (0, 255, 255),
+                   1010: (0, 0, 0), 1011: (255, 255, 255)}
+FIXED_COLOURS = {1010: (0, 0, 0), 1011: (255, 255, 255)}
+
+
+class Deco:
+    """A decoration object: drawn as a plain shape (gd/deco_table.py), never collided with."""
+    __slots__ = ("shape", "x", "y", "w", "h", "rot", "flip_x", "flip_y", "sx", "sy", "colour", "alpha", "behind",
+                 "groups", "minx", "maxx", "channel")
+
+
 class ImportReport:
     def __init__(self):
         self.total = 0
         self.by_kind = Counter()
         self.skipped = Counter()          # id -> count, no physics mapping
+        self.decoration = 0               # objects without physics that are drawn (gd/deco_table.py)
         self.ignored = Counter()          # reason -> count, mapped but not simulated
         self.assumed = Counter()          # note -> count, simulated with an assumed hitbox
         self.warnings = []
@@ -94,7 +116,10 @@ class Level:
         self.sections = {}             # section index -> list[GameObject] that never move
         self._stamp = 0
         self.triggers = None           # triggers.Setup, if the level has any (gd/triggers.py)
-        self.colours = _colours(self.header)   # colour channel -> (r, g, b); 1000 background, 1001 ground
+        self.colours, self.opacity = _colours(self.header)  # channel -> (r, g, b) / 0..1; 1000 background, 1001 ground
+        self.deco = []                 # Deco: what is drawn but has no physics
+        self.colour_triggers = []      # (x, channel, (r, g, b) or None, opacity, ticks, copy-from channel) by x
+        self._deco_shape = None
 
         h = self.header
         self.start_mode = int(_num(h, "kA2")) if 0 <= int(_num(h, "kA2")) <= 7 else 0
@@ -117,6 +142,10 @@ class Level:
             self.report.total += 1
             x, y = _num(raw, 2), _num(raw, 3)
             max_x, max_y = max(max_x, x), max(max_y, y)
+            oid = int(_num(raw, 1))
+            if oid in COLOUR_TRIGGERS:
+                self._colour_trigger(raw, oid, x)
+                continue
             if _num(raw, 1) in T.TRIGGER_IDS:
                 t = T.parse(raw, int(_num(raw, 1)), x, y, _groups(raw), _num)
                 if t is not None:
@@ -134,6 +163,9 @@ class Level:
                 self.report.by_kind[obj.kind] += 1
                 if obj.note:
                     self.report.assumed[obj.note] += 1
+            elif self._deco_shape is not None:
+                self.deco.append(self._make_deco(raw, x, y, *self._deco_shape))
+        self.colour_triggers.sort(key=lambda c: c[0])
         static = self.objects
         if triggers:
             wanted = {t.target for t in triggers if t.id == T.TELEPORT}
@@ -144,7 +176,7 @@ class Level:
                     for g in groups:
                         if g in wanted and g not in anchors:
                             anchors[g] = (_num(raw, 2), _num(raw, 3), groups)
-            self.triggers = T.Setup(triggers, self.objects, anchors)
+            self.triggers = T.Setup(triggers, self.objects, anchors, self.deco)
             static = self.triggers.static
         for obj in static:
             for s in range(int(obj.minx // SECTION_SIZE), int(obj.maxx // SECTION_SIZE) + 1):
@@ -161,15 +193,23 @@ class Level:
             oid = int(float(raw[1]))
         except (TypeError, ValueError):
             return None
+        self._deco_shape = None
         d = O.OBJECTS.get(oid)
         if d is None:
-            self.report.skipped[oid] += 1
+            shape = DECO.get(oid)
+            if shape is not None:
+                self._deco_shape = shape
+                self.report.decoration += 1
+            else:
+                self.report.skipped[oid] += 1
             return None
         if d.kind == O.NOOP:
             self.report.ignored[d.note] += 1
             return None
         if _num(raw, 121) != 0:
             self.report.ignored['objects flagged "No Touch" (decoration)'] += 1
+            if d.kind in (O.SOLID, O.BREAKABLE, O.HAZARD):        # still drawn, just never touched
+                self._deco_shape = ("block" if d.kind != O.HAZARD else "spike", d.w, d.h, 1004, False)
             return None
 
         rot = _num(raw, 6) % 360.0
@@ -226,6 +266,39 @@ class Level:
             o.miny, o.maxy = y - h / 2.0, y + h / 2.0
         return o
 
+    def _colour_trigger(self, raw, oid, x):
+        """Colour triggers the player passes (not spawned or touched ones) - drawing only."""
+        self.report.by_kind["colour trigger"] += 1
+        if _num(raw, 62) or _num(raw, 11):
+            return
+        channel = COLOUR_TRIGGERS[oid] or int(_num(raw, 23, 1)) or 1
+        rgb = tuple(max(0, min(255, int(_num(raw, k, 255)))) for k in (7, 8, 9))
+        if _num(raw, 15):
+            rgb = DEFAULT_COLOURS[1005]
+        elif _num(raw, 16):
+            rgb = DEFAULT_COLOURS[1006]
+        copy = int(_num(raw, 50))
+        self.colour_triggers.append((x, channel, None if copy else rgb, max(0.0, min(1.0, _num(raw, 35, 1.0))),
+                                     max(0, int(round(_num(raw, 10) * 240))), copy))
+
+    def _make_deco(self, raw, x, y, shape, w, h, channel, behind):
+        d = Deco()
+        d.shape, d.x, d.y, d.w, d.h, d.behind = shape, x, y, w, h, behind
+        d.rot = _num(raw, 6) % 360.0
+        d.flip_x, d.flip_y = _num(raw, 4) != 0, _num(raw, 5) != 0
+        base = abs(_num(raw, 32, 1.0)) or 1.0
+        d.sx, d.sy = abs(_num(raw, 128, base)) or 1.0, abs(_num(raw, 129, base)) or 1.0
+        main = int(_num(raw, 21))
+        channel = main if main > 0 else channel
+        d.colour = FIXED_COLOURS.get(channel) or self.colours.get(channel) or DEFAULT_COLOURS.get(channel) \
+            or (255, 255, 255)
+        d.alpha = 1.0 if channel in FIXED_COLOURS else self.opacity.get(channel, 1.0)
+        d.channel = channel
+        d.groups = _groups(raw)
+        reach = max(w * d.sx, h * d.sy) * 0.75             # half the diagonal, whatever the angle
+        d.minx, d.maxx = x - reach, x + reach
+        return d
+
     # ------------------------------------------------------------------ queries
     def next_stamp(self):
         self._stamp += 1
@@ -254,24 +327,26 @@ def _uid(o):
 
 
 def _channel(entry):
-    """"1_r_2_g_3_b_6_id..." -> (id, (r, g, b))"""
+    """"1_r_2_g_3_b_6_id_7_opacity..." -> (id, (r, g, b), opacity)"""
     parts = entry.split("_")
     d = dict(zip(parts[0::2], parts[1::2]))
     try:
         rgb = tuple(max(0, min(255, int(float(d[k])))) for k in ("1", "2", "3"))
-        return int(float(d.get("6", 0))), rgb
+        return int(float(d.get("6", 0))), rgb, max(0.0, min(1.0, float(d.get("7", 1.0))))
     except (KeyError, ValueError):
-        return None, None
+        return None, None, 1.0
 
 
 def _colours(h):
-    out = {}
+    """-> ({channel: (r, g, b)}, {channel: opacity})"""
+    out, opacity = {}, {}
     if h.get("kS38"):
         for entry in str(h["kS38"]).split("|"):
-            channel, rgb = _channel(entry)
+            channel, rgb, alpha = _channel(entry)
             if channel:
                 out[channel] = rgb
-        return out
+                opacity[channel] = alpha
+        return out, opacity
     for key, channel in (("kS29", 1000), ("kS30", 1001)):
         if h.get(key):
             rgb = _channel(str(h[key]))[1]
@@ -280,7 +355,7 @@ def _colours(h):
     for keys, channel in ((("kS1", "kS2", "kS3"), 1000), (("kS4", "kS5", "kS6"), 1001)):
         if channel not in out and all(k in h for k in keys):
             out[channel] = tuple(max(0, min(255, int(_num(h, k)))) for k in keys)
-    return out
+    return out, opacity
 
 
 def _groups(raw):

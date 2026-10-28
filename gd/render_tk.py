@@ -9,7 +9,7 @@ window of its own for `python3 main.py level.gmd`.
 
 Keys   Space / Up / W / click  jump (hold)        Esc or P  pause menu
        R  restart     Z / X  add / remove a practice checkpoint
-       H  hitboxes    O  debug info    F  FPS counter    T  trail    N  single step
+       H  hitboxes    O  debug info    F  FPS counter    D  decoration    T  trail    N  single step
        - / =  speed
 """
 import math
@@ -24,6 +24,7 @@ from . import ui
 from .effects import Effects, blend
 from .fps import FrameStats
 from .macros import InputSequence
+from .level import DEFAULT_COLOURS, FIXED_COLOURS
 from .player import FLYING, WAVE
 
 STEP = 1.0 / C.TPS
@@ -52,6 +53,9 @@ AUTO_CHECKPOINT_TICKS = 300          # practice mode: one checkpoint every 1.25 
 FPS_CAP = 240                        # frames a second at most: one per physics step - more only costs battery
 CHUNK = 600.0                        # world units: level objects are drawn and dropped this many at a time
 VIEW_MARGIN = 360.0                  # ... and drawn this far beyond the screen's edges, so nothing pops in
+SAW_SPIN = -300.0                    # degrees a second the saws' teeth turn (clockwise) - purely visual, EST
+DECO_PER_FRAME = 350                 # decoration shapes made per frame at most, so a busy chunk never stutters
+DECO_DIM = 0.3                       # how far decoration is mixed into the background: the gameplay stays in front
 
 
 def _chunks(objects):
@@ -66,17 +70,22 @@ def _hex(rgb):
     return "#%02x%02x%02x" % rgb
 
 
+def _dim(rgb, limit):
+    """A level colour no brighter than `limit`, so the drawn gameplay stays readable on it."""
+    top = max(rgb)
+    return _hex(tuple(int(c * limit / top) for c in rgb)) if top > limit else _hex(rgb)
+
+
+BG_LIMIT, GROUND_LIMIT = 64, 40
+
+
 def level_backdrop(level, theme_bg):
     """(background, ground) colours for a level: its own, from the level file, darkened so
     the drawn objects stay readable - or the difficulty theme for levels without colours."""
     bg, ground = level.colours.get(1000), level.colours.get(1001)
     if bg is None:
         return theme_bg, blend(theme_bg, "#000000", 0.45)
-
-    def dim(rgb, limit):
-        top = max(rgb)
-        return _hex(tuple(int(c * limit / top) for c in rgb)) if top > limit else _hex(rgb)
-    return dim(bg, 64), dim(ground or (0, 0, 0), 40)
+    return _dim(bg, BG_LIMIT), _dim(ground or (0, 0, 0), GROUND_LIMIT)
 
 
 class Painter:
@@ -90,6 +99,9 @@ class Painter:
     zoom = 1.5
     _made = None
     _extra = ()                          # tags every new item also gets (draw_object's `tag`)
+    spin = None                          # a list that collects (teeth item, saw) to turn, or None (the editor)
+    deco_bg = BG                         # what decoration is dimmed towards
+    chan = {}                            # colour channel -> (r, g, b), opacity as colour triggers left it
     block_fill, block_line, block_inner = COL_SOLID_FILL, COL_SOLID, "#33456F"
     hazard_fill, hazard_line, hazard_inner = COL_HAZARD_FILL, COL_HAZARD, "#9C2B36"
 
@@ -148,6 +160,74 @@ class Painter:
         c, s = math.cos(a), math.sin(a)
         return [(cx + (x - cx) * c - (y - cy) * s, cy + (x - cx) * s + (y - cy) * c) for x, y in points]
 
+    def _mirror(self, pts, o):
+        """An object's art mirrored the way the level flips it (keys 4 / 5), before turning."""
+        if o.flip_x:
+            pts = [(2 * o.x - x, y) for x, y in pts]
+        if o.flip_y:
+            pts = [(x, 2 * o.y - y) for x, y in pts]
+        return pts
+
+    def draw_deco(self, d, tags=(), dx=0.0, dy=0.0):
+        """One decoration object (level.Deco) as a plain shape; returns its canvas item, or None
+        when its colour is (nearly) see-through.  Tk has no transparency: a part-transparent
+        colour is drawn mixed with the background instead."""
+        rgb, alpha = self.chan.get(d.channel) or (d.colour, d.alpha)
+        colour = self.deco_colour(rgb, alpha)
+        x, y = d.x + dx, d.y + dy
+        hw, hh = d.w * d.sx / 2.0, d.h * d.sy / 2.0
+        shape = d.shape
+        tags = ("deco", ("co%d" if shape == "outline" else "cf%d") % d.channel) + tuple(tags)
+        state = "hidden" if alpha < 0.08 else "normal"
+        if shape in ("circle", "cloud"):
+            r = min(hw, hh) if shape == "circle" else hh
+            return self.cv.create_oval((x - (r if shape == "circle" else hw)) * self.zoom, -(y + r) * self.zoom,
+                                       (x + (r if shape == "circle" else hw)) * self.zoom, -(y - r) * self.zoom,
+                                       fill=colour, outline="", tags=tags, state=state)
+        if shape == "spike":
+            pts = [(-hw, -hh), (hw, -hh), (0.0, hh)]
+        elif shape == "spikes":                             # a row of three small teeth on the cell floor
+            pts = [(-hw, -hh)]
+            for i in range(3):
+                pts += [(-hw + hw * 2 * (i + 0.5) / 3, hh), (-hw + hw * 2 * (i + 1) / 3, -hh)]
+        elif shape == "slope":
+            pts = [(-hw, -hh), (hw, -hh), (hw, hh)]
+        else:                                               # block, outline, line, chain
+            if shape == "line":
+                hh = max(hh, 0.75)
+            pts = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+        if d.flip_x:
+            pts = [(-px, py) for px, py in pts]
+        if d.flip_y:
+            pts = [(px, -py) for px, py in pts]
+        pts = [(x + px, y + py) for px, py in pts]
+        if d.rot:
+            pts = self._rot(pts, x, y, d.rot)
+        flat = []
+        for px, py in pts:
+            flat += [px * self.zoom, -py * self.zoom]
+        if shape == "outline":
+            return self.cv.create_polygon(*flat, fill="", outline=colour, width=max(1, int(round(self.zoom))),
+                                          tags=tags, state=state)
+        return self.cv.create_polygon(*flat, fill=colour, outline="", tags=tags, state=state)
+
+    def deco_colour(self, rgb, alpha):
+        return blend(self.deco_bg, _hex(rgb), min(1.0, alpha) * (1.0 - DECO_DIM))
+
+    @staticmethod
+    def saw_points(x, y, r, angle):
+        """A sawblade's outline: teeth whose tips reach 1.5 x the hitbox radius (the sprite
+        is bigger than the hitbox), each with a long leading edge and a sharp back."""
+        n = max(9, min(18, int(r * 0.55)))
+        outer, inner = r * 1.5, r * 1.2
+        pts = []
+        for i in range(n):
+            a = math.radians(angle) + 2 * math.pi * i / n
+            b = a + 2 * math.pi / n * 0.72
+            pts += [(x + inner * math.cos(a), y + inner * math.sin(a)), (x + outer * math.cos(b), y + outer * math.sin(b)),
+                    (x + inner * math.cos(b + 0.04), y + inner * math.sin(b + 0.04))]
+        return pts
+
     @staticmethod
     def _box(o):
         return o.corners or [(o.minx, o.miny), (o.maxx, o.miny), (o.maxx, o.maxy), (o.minx, o.maxy)]
@@ -174,17 +254,27 @@ class Painter:
                 aw, ah = art
                 base = o.y - (15.0 if ah > 20 else ah / 2.0)
                 pts = [(o.x - aw / 2, base), (o.x + aw / 2, base), (o.x, base + ah)]
-                self._poly(self._rot(pts, o.x, o.y, o.rot), fill=self.hazard_fill, outline=self.hazard_line,
-                           width=max(1, int(round(self.zoom))), tags="art")
+                self._poly(self._rot(self._mirror(pts, o), o.x, o.y, o.rot), fill=self.hazard_fill,
+                           outline=self.hazard_line, width=max(1, int(round(self.zoom))), tags="art")
                 inner = [(o.x - aw * 0.22, base + ah * 0.16), (o.x + aw * 0.22, base + ah * 0.16),
                          (o.x, base + ah * 0.6)]
-                self._poly(self._rot(inner, o.x, o.y, o.rot), fill=self.hazard_inner, outline="", tags="art")
+                self._poly(self._rot(self._mirror(inner, o), o.x, o.y, o.rot), fill=self.hazard_inner, outline="",
+                           tags="art")
             self._poly(self._box(o), fill="" if art else self.hazard_fill,
                        outline=HIT_HAZARD if art else self.hazard_line, width=1, tags="hit" if art else "")
         elif k == O.SAW:
-            self._oval(o.x, o.y, o.radius * 1.5, fill=COL_HAZARD_FILL, outline=COL_HAZARD, tags="art")
-            self._oval(o.x, o.y, o.radius * 0.5, fill=BG, outline=COL_HAZARD, tags="art")
-            self._oval(o.x, o.y, o.radius, fill="", outline=HIT_HAZARD, width=1, tags="hit")
+            r = o.radius
+            teeth = self._poly(self.saw_points(o.x, o.y, r, 0.0), fill=self.hazard_fill, outline=self.hazard_line,
+                               width=max(1, int(round(self.zoom))), tags="art")
+            if self.spin is not None:
+                self.spin.append((teeth, o))
+            self._oval(o.x, o.y, r * 1.2, fill=blend(self.hazard_fill, "#000000", 0.35), outline=self.hazard_line,
+                       width=max(1, int(round(self.zoom))), tags="art")
+            self._oval(o.x, o.y, r * 0.78, fill="", outline=self.hazard_inner, width=max(1, int(round(self.zoom * 1.4))),
+                       tags="art")
+            self._oval(o.x, o.y, r * 0.3, fill=self.hazard_line, outline="", tags="art")
+            self._oval(o.x, o.y, r * 0.12, fill=self.hazard_fill, outline="", tags="art")
+            self._oval(o.x, o.y, r, fill="", outline=HIT_HAZARD, width=1, tags="hit")
         elif k in (O.SLOPE, O.SLOPE_HAZARD):
             a, b, c, d = (o.minx, o.miny), (o.maxx, o.miny), (o.maxx, o.maxy), (o.minx, o.maxy)
             tri = {0: (a, b, c), 1: (a, b, d), 2: (a, c, d), 3: (b, c, d)}[o.orient]
@@ -322,6 +412,11 @@ class GameView(Painter):
         self.show_hit = show_hitboxes
         self.show_debug = debug
         self.show_fps = settings.get("show_fps")      # remembered between levels and sessions
+        self.show_deco = settings.get("show_deco")    # decoration (gd/deco_table.py), also remembered
+        self.chan = {}                                # colour channels changed by colour triggers so far
+        self.colour_fades = {}                        # channel -> (start tick, ticks, from rgb, to rgb, from a, to a)
+        self.colour_next = 0                          # next colour trigger (level.colour_triggers) to pass
+        self.colour_tick = 0
         self.frames = FrameStats()
         self.slack = 0.0                              # seconds the frame timer is set short by (see _frame)
         self.fps_next = 0.0                           # when the FPS text is next refreshed
@@ -331,7 +426,7 @@ class GameView(Painter):
         self.key = key
         self.on_exit = on_exit
         self.bg, self.ground = level_backdrop(sim.level, THEMES.get(theme, BG))
-        self.portal_bg = self.bg
+        self.portal_bg = self.deco_bg = self.bg
         self.block_fill = blend(self.bg, "#000000", 0.55)
         self.block_line = blend(COL_SOLID, "#FFFFFF", 0.35)
         self.block_inner = blend(self.block_fill, self.block_line, 0.28)
@@ -406,26 +501,38 @@ class GameView(Painter):
         # the sky gets a little lighter towards the ground, the way GD's backgrounds read
         top = max(1500.0, lv.max_y)
         bands = 7
+        self.it_bands = []
         for i in range(bands):
             y0 = 60.0 + (top - 60.0) * i / bands
-            self._rect(left, right, 0.0 if i == 0 else y0, top + 600.0 if i == bands - 1 else 60.0 + (top - 60.0) * (i + 1) / bands,
-                       fill=blend(self.bg, "#FFFFFF", 0.035 * (bands - i) / bands), outline="")
-        self._rect(left, right, -900.0, 0.0, fill=self.ground, outline="")
-        self._rect(left, right, -60.0, 0.0, fill=blend(self.ground, "#FFFFFF", 0.05), outline="")
+            light = 0.035 * (bands - i) / bands
+            item = self._rect(left, right, 0.0 if i == 0 else y0,
+                              top + 600.0 if i == bands - 1 else 60.0 + (top - 60.0) * (i + 1) / bands,
+                              fill=blend(self.bg, "#FFFFFF", light), outline="")
+            self.it_bands.append((item, light))
+        self.it_ground = [(self._rect(left, right, -900.0, 0.0, fill=self.ground, outline=""), 0.0),
+                          (self._rect(left, right, -60.0, 0.0, fill=blend(self.ground, "#FFFFFF", 0.05), outline=""),
+                           0.05)]
         line = blend(self.ground, "#FFFFFF", 0.9)
         cv.create_line(self._wx(left), self._wy(0), self._wx(right), self._wy(0), fill=blend(line, self.bg, 0.6),
                        width=max(3, int(4 * self.zoom)))
         cv.create_line(self._wx(left), self._wy(0), self._wx(right), self._wy(0), fill=line, width=2)
         cv.create_line(self._wx(lv.end_x), self._wy(0), self._wx(lv.end_x), self._wy(top),
                        fill=ui.GREEN, width=2, dash=(8, 6))
-        # level objects are drawn near the camera only (_cull) and always stay below this
+        # level objects are drawn near the camera only (_cull) and always stay below this, and
+        # decoration below that
+        self.it_deco = cv.create_line(0, 0, 0, 0, state="hidden")
         self.it_layer = cv.create_line(0, 0, 0, 0, state="hidden")
         tr = lv.triggers
         self.chunks = _chunks(tr.static if tr is not None else lv.objects)
         self.drawn = set()                            # chunk indices on the canvas
+        self.deco_chunks = _chunks(tr.static_deco if tr is not None else lv.deco)
+        self.cl_deco = [_chunks(c.deco) for c in tr.clusters] if tr is not None else []
+        self.deco_jobs = {}                           # chunk tag -> [decoration, next index, cluster or None]
+        self.deco_done = set()                        # chunk tags whose decoration is all on the canvas
         self.cl_chunks = [_chunks(c.objects) for c in tr.clusters] if tr is not None else []
         self.cl_drawn = set()                         # (cluster, chunk) on the canvas
         self.cl_at = [(0.0, 0.0)] * len(self.cl_chunks)   # how far each cluster's items have been moved
+        self.saws = {}                                # chunk tag -> [(teeth item, saw, cluster or None)]
 
     def _cull(self, x0, x1):
         """Draw the chunks of the level that are on (or near) the screen and drop the rest;
@@ -438,17 +545,22 @@ class GameView(Painter):
             if want != (i in drawn):
                 tag = "c%d" % i
                 if want:
+                    self.spin = []
                     for o in objs:
                         self.draw_object(o, tag)
+                    if self.spin:
+                        self.saws[tag] = [(item, o, None) for item, o in self.spin]
+                    self.spin = None
                     drawn.add(i)
                     made.append(tag)
                 else:
                     cv.delete(tag)
+                    self.saws.pop(tag, None)
                     drawn.discard(i)
         trig = self.sim.trig
         if trig is not None:
             for k, chunks in enumerate(self.cl_chunks):
-                off = trig.off[k]
+                off = trig.hidden(k)
                 dx, dy = trig.offsets[k]
                 at = self.cl_at[k]
                 if not off and (dx, dy) != at:
@@ -460,24 +572,150 @@ class GameView(Painter):
                     if want != (key in self.cl_drawn):
                         tag = "k%d_%d" % key
                         if want:
+                            self.spin = []
                             for o in objs:
                                 self.draw_object(o, (tag, "k%d" % k))
+                            if self.spin:
+                                self.saws[tag] = [(item, o, k) for item, o in self.spin]
+                            self.spin = None
                             if at != (0.0, 0.0):
                                 cv.move(tag, at[0] * z, -at[1] * z)
                             self.cl_drawn.add(key)
                             made.append(tag)
                         else:
                             cv.delete(tag)
+                            self.saws.pop(tag, None)
                             self.cl_drawn.discard(key)
         for tag in made:
             cv.tag_lower(tag, self.it_layer)
             if not self.show_hit:
                 cv.itemconfigure(tag + "&&hit", state="hidden")
+        if self.show_deco:
+            self._cull_deco(x0, x1)
+
+    def _cull_deco(self, x0, x1):
+        cv, z = self.cv, self.zoom
+        want = {}
+        for i, (a, b, items) in enumerate(self.deco_chunks):
+            if a <= x1 and b >= x0:
+                want["d%d" % i] = (items, None)
+        trig = self.sim.trig
+        if trig is not None:
+            for k, chunks in enumerate(self.cl_deco):
+                if trig.hidden(k):
+                    continue
+                dx = trig.offsets[k][0]
+                for j, (a, b, items) in enumerate(chunks):
+                    if a + dx <= x1 and b + dx >= x0:
+                        want["e%d_%d" % (k, j)] = (items, k)
+        for tag in list(self.deco_done | set(self.deco_jobs)):
+            if tag not in want:
+                cv.delete(tag)
+                self.deco_done.discard(tag)
+                self.deco_jobs.pop(tag, None)
+        for tag, (items, k) in want.items():
+            if tag not in self.deco_done and tag not in self.deco_jobs:
+                self.deco_jobs[tag] = [items, 0, k]
+        budget = DECO_PER_FRAME
+        for tag in list(self.deco_jobs):
+            if budget <= 0:
+                break
+            job = self.deco_jobs[tag]
+            items, start, k = job
+            dx, dy = self.cl_at[k] if k is not None else (0.0, 0.0)
+            extra = (tag,) if k is None else (tag, "k%d" % k)
+            end = min(len(items), start + budget)
+            for d in items[start:end]:
+                self.draw_deco(d, extra, dx, dy)
+            budget -= end - start
+            cv.tag_lower(tag, self.it_deco)
+            if end >= len(items):
+                del self.deco_jobs[tag]
+                self.deco_done.add(tag)
+            else:
+                job[1] = end
+
+    # -- colour triggers: only what is drawn changes -------------------------------------
+    def _channel(self, ch):
+        lv = self.sim.level
+        got = self.chan.get(ch)
+        if got is not None:
+            return got
+        if ch in FIXED_COLOURS:
+            return FIXED_COLOURS[ch], 1.0
+        return lv.colours.get(ch) or DEFAULT_COLOURS.get(ch) or (255, 255, 255), lv.opacity.get(ch, 1.0)
+
+    def _colours_step(self):
+        sim, triggers = self.sim, self.sim.level.colour_triggers
+        if not triggers:
+            return
+        instant = False
+        if sim.tick < self.colour_tick:               # a restart or a jump back to a checkpoint: replay
+            changed, self.chan = list(self.chan), {}
+            for ch in changed:                        # back to the level's own colours ...
+                self._set_channel(ch, *self._channel(ch), force=True)
+            self.colour_next, self.colour_fades, instant = 0, {}, True     # ... then up to here at once
+        self.colour_tick = sim.tick
+        x = sim.player.x
+        while self.colour_next < len(triggers) and triggers[self.colour_next][0] <= x:
+            _x, ch, rgb, alpha, ticks, copy = triggers[self.colour_next]
+            self.colour_next += 1
+            now_rgb, now_alpha = self._channel(ch)
+            if copy:
+                rgb = self._channel(copy)[0]
+            self.colour_fades[ch] = (sim.tick, 0 if instant else ticks, now_rgb, rgb, now_alpha, alpha)
+        for ch, (start, ticks, a, b, aa, ab) in list(self.colour_fades.items()):
+            t = 1.0 if ticks <= 0 else min(1.0, (sim.tick - start) / float(ticks))
+            self._set_channel(ch, tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3)), aa + (ab - aa) * t)
+            if t >= 1.0:
+                del self.colour_fades[ch]
+
+    def _set_channel(self, ch, rgb, alpha, force=False):
+        if not force and self.chan.get(ch) == (rgb, alpha):
+            return
+        self.chan[ch] = (rgb, alpha)
+        cv = self.cv
+        if ch == 1000:
+            self.bg = self.deco_bg = _dim(rgb, BG_LIMIT)
+            cv.configure(bg=self.bg)
+            for item, light in self.it_bands:
+                cv.itemconfigure(item, fill=blend(self.bg, "#FFFFFF", light))
+        elif ch == 1001:
+            self.ground = _dim(rgb, GROUND_LIMIT)
+            for item, light in self.it_ground:
+                cv.itemconfigure(item, fill=blend(self.ground, "#FFFFFF", light))
+        colour = self.deco_colour(rgb, alpha)
+        state = "hidden" if alpha < 0.08 else "normal"
+        cv.itemconfigure("cf%d" % ch, fill=colour, state=state)
+        cv.itemconfigure("co%d" % ch, outline=colour, state=state)
+
+    def toggle_deco(self):
+        self.show_deco = not self.show_deco
+        settings.put("show_deco", self.show_deco)
+        if not self.show_deco:
+            for tag in self.deco_done | set(self.deco_jobs):
+                self.cv.delete(tag)
+            self.deco_done, self.deco_jobs = set(), {}
+        if self.panel == "pause":
+            self._show_panel("pause")
+
+    def _spin_saws(self, now):
+        angle = (now * SAW_SPIN) % 360.0
+        cv, z, at = self.cv, self.zoom, self.cl_at
+        for saws in self.saws.values():
+            for item, o, k in saws:
+                dx, dy = at[k] if k is not None else (0.0, 0.0)
+                flat = []
+                for x, y in self.saw_points(o.x + dx, o.y + dy, o.radius, angle):
+                    flat += [x * z, -y * z]
+                cv.coords(item, *flat)
 
     def _build_dynamic(self):
         cv = self.cv
-        self.it_floor = cv.create_rectangle(0, 0, 0, 0, fill="#080A11", outline="#DDE3F0", state="hidden")
-        self.it_ceil = cv.create_rectangle(0, 0, 0, 0, fill="#080A11", outline="#DDE3F0", state="hidden")
+        # the floor and ceiling of flying modes: only a faint line, so nothing of the level is covered
+        limit = blend(self.bg, "#DDE3F0", 0.35)
+        self.it_floor = cv.create_line(0, 0, 0, 0, fill=limit, width=2, dash=(10, 6), state="hidden")
+        self.it_ceil = cv.create_line(0, 0, 0, 0, fill=limit, width=2, dash=(10, 6), state="hidden")
         self.it_trail = cv.create_line(0, 0, 0, 0, fill="#FFFFFF", width=1, state="hidden")
         # the player's three boxes ("phit": drawn over the icon, like GD does)
         both = ("hit", "phit")
@@ -533,6 +771,8 @@ class GameView(Painter):
             self._toggle("show_debug")
         elif k == "f":
             self.toggle_fps()
+        elif k == "d":
+            self.toggle_deco()
         elif k == "t":
             self._toggle("show_trail")
         elif k == "z":
@@ -606,7 +846,7 @@ class GameView(Painter):
         cv.delete("panel")
         self.panel = kind
         left, top = cv.canvasx(0), cv.canvasy(0)
-        pw, ph = 380, (446 if kind == "pause" else 330)
+        pw, ph = 380, (496 if kind == "pause" else 330)
         x0, y0 = left + (self.w - pw) / 2.0, top + (self.h - ph) / 2.0
         ui.rounded(cv, x0 - 3, y0 - 3, x0 + pw + 3, y0 + ph + 3, 20, fill="#05070C", outline="", tags="panel")
         ui.rounded(cv, x0, y0, x0 + pw, y0 + ph, 18, fill=ui.PANEL, outline=ui.LINE, tags="panel")
@@ -630,7 +870,8 @@ class GameView(Painter):
             button(3, "Hitboxes: %s" % on(self.show_hit), self._panel_toggle_hit, key="H")
             button(4, "Debug info: %s" % on(self.show_debug), lambda: self._panel_toggle("show_debug"), key="O")
             button(5, "FPS counter: %s" % on(self.show_fps), self.toggle_fps, key="F")
-            button(6, "Exit level", self.exit, "danger", "Q")
+            button(6, "Decoration: %s" % on(self.show_deco), self.toggle_deco, key="D")
+            button(7, "Exit level", self.exit, "danger", "Q")
         else:
             title = "Practice complete!" if self.practice else "Level complete!"
             lines = [("Time", "%.2f s" % sim.time), ("Attempts", str(self.attempt)), ("Jumps", str(self.jumps))]
@@ -887,12 +1128,15 @@ class GameView(Painter):
             cv.yview_moveto(0)
         else:
             left, top = cv.canvasx(0), cv.canvasy(0)
+        self._colours_step()
         self._cull(left / z - VIEW_MARGIN, (left + w) / z + VIEW_MARGIN)
+        if self.saws:
+            self._spin_saws(now)
 
         if sim.ceiling is not None:
             x0, x1 = p.x - 2000, p.x + 3000
-            cv.coords(self.it_floor, self._wx(x0), self._wy(sim.floor), self._wx(x1), self._wy(sim.floor - 900))
-            cv.coords(self.it_ceil, self._wx(x0), self._wy(sim.ceiling + 900), self._wx(x1), self._wy(sim.ceiling))
+            cv.coords(self.it_floor, self._wx(x0), self._wy(sim.floor), self._wx(x1), self._wy(sim.floor))
+            cv.coords(self.it_ceil, self._wx(x0), self._wy(sim.ceiling), self._wx(x1), self._wy(sim.ceiling))
             cv.itemconfigure(self.it_floor, state="normal")
             cv.itemconfigure(self.it_ceil, state="normal")
         else:

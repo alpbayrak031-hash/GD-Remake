@@ -7,7 +7,9 @@ not throw decoration or triggers away.
 import math
 
 from . import objects as O
-from .level import Level
+from . import triggers as T
+from .deco_table import TABLE as DECO
+from .level import COLOUR_TRIGGERS, Level
 from .levelio import RawLevel, load_level_file, write_gmd
 
 GRID = 30.0
@@ -25,8 +27,13 @@ PALETTE = [
     ("Mode portals", [(12, "Cube"), (13, "Ship"), (47, "Ball"), (111, "UFO"), (660, "Wave"), (745, "Robot"),
                       (1331, "Spider"), (1933, "Swing")]),
     ("Other portals", [(11, "Gravity up"), (10, "Gravity down"), (2926, "Gravity toggle"), (101, "Mini"),
-                       (99, "Normal size"), (286, "Dual on"), (287, "Dual off"), (200, "Speed 0.5x"),
-                       (201, "Speed 1x"), (202, "Speed 2x"), (203, "Speed 3x"), (1334, "Speed 4x")]),
+                       (99, "Normal size"), (286, "Dual on"), (287, "Dual off"), (747, "Teleport"),
+                       (200, "Speed 0.5x"), (201, "Speed 1x"), (202, "Speed 2x"), (203, "Speed 3x"),
+                       (1334, "Speed 4x")]),
+    ("Triggers", [(901, "Move"), (1049, "Toggle"), (1268, "Spawn"), (1616, "Stop"), (1347, "Follow"),
+                  (1007, "Alpha"), (899, "Colour"), (3022, "Teleport")]),
+    ("Decoration", [(211, "Art block"), (472, "Outline"), (1754, "Line"), (888, "Art slope"), (191, "Fake spike"),
+                    (18, "Ground spikes"), (1766, "Ball"), (41, "Chain"), (48, "Cloud")]),
 ]
 LABELS = {oid: label for _, items in PALETTE for oid, label in items}
 
@@ -60,10 +67,17 @@ def _num(raw, key, default=0.0):
         return default
 
 
+# What each trigger is called on its box in the editor
+TRIGGER_LABELS = {901: "MOVE", 1049: "TOGGLE", 1268: "SPAWN", 1616: "STOP", 1347: "FOLLOW", 1007: "ALPHA",
+                  3022: "TELEPORT", 899: "COLOUR", 29: "BG", 30: "GROUND", 105: "OBJ", 744: "3DL", 900: "G2",
+                  104: "LINE", 915: "LINE", 221: "COL 1", 717: "COL 2", 718: "COL 3", 743: "COL 4"}
+
+
 class EdObject:
     """One object in the document.  `phys` is its physics definition, or None for
-    objects the engine does not simulate (they are kept, drawn as markers)."""
-    __slots__ = ("uid", "raw", "phys")
+    objects the engine does not simulate; `deco` is how a decoration object is drawn
+    (level.Deco), or None.  Everything else is kept and drawn as a marker."""
+    __slots__ = ("uid", "raw", "phys", "deco")
     _next = 1
 
     def __init__(self, raw):
@@ -72,9 +86,13 @@ class EdObject:
         self.raw = raw
         rep = _factory.report
         rep.skipped.clear(), rep.ignored.clear(), rep.assumed.clear()
-        self.phys = _factory._build(raw, _num(raw, 2), _num(raw, 3))
+        x, y = _num(raw, 2), _num(raw, 3)
+        self.phys = _factory._build(raw, x, y)
+        self.deco = None
         if self.phys is not None:
             self.phys.uid, self.phys.stamp = self.uid, -1
+        elif _factory._deco_shape is not None:
+            self.deco = _factory._make_deco(raw, x, y, *_factory._deco_shape)
 
     @property
     def id(self):
@@ -96,6 +114,10 @@ class EdObject:
         """(minx, maxx, miny, maxy) used for picking; never smaller than 20 x 20."""
         p = self.phys
         if p is None:
+            d = self.deco
+            if d is not None:
+                hw, hh = max(10.0, d.w * d.sx / 2.0), max(10.0, d.h * d.sy / 2.0)
+                return self.x - hw, self.x + hw, self.y - hh, self.y + hh
             return self.x - 15.0, self.x + 15.0, self.y - 15.0, self.y + 15.0
         cx, cy = (p.minx + p.maxx) / 2.0, (p.miny + p.maxy) / 2.0
         hw, hh = max(10.0, (p.maxx - p.minx) / 2.0), max(10.0, (p.maxy - p.miny) / 2.0)
@@ -401,6 +423,26 @@ class LevelDocument:
         self._replace(objs, turned)
         return list(turned.values())
 
+    def set_values(self, objs, values, checkpoint=True):
+        """Change level-string keys of objects: {key: text, or None to remove the key}.
+        Returns the changed objects (new ones, as every edit makes)."""
+        objs = self.alive(objs)
+        if not objs or not values:
+            return objs
+        if checkpoint:
+            self._checkpoint()
+        changed = {}
+        for o in objs:
+            raw = dict(o.raw)
+            for key, value in values.items():
+                if value is None or value == "":
+                    raw.pop(key, None)
+                else:
+                    raw[key] = value
+            changed[o.uid] = EdObject(raw)
+        self._replace(objs, changed)
+        return list(changed.values())
+
     def remove(self, objs, checkpoint=True):
         gone = {o.uid for o in self.alive(objs)}
         if not gone:
@@ -460,8 +502,106 @@ class LevelDocument:
         return self._statistics()[0]
 
 
+def is_trigger(oid):
+    return oid in TRIGGER_LABELS or oid in T.TRIGGER_IDS or oid in COLOUR_TRIGGERS
+
+
 def describe(oid):
     if oid in LABELS:
         return LABELS[oid]
+    if oid in TRIGGER_LABELS:
+        return TRIGGER_LABELS[oid].title() + " trigger"
     d = O.OBJECTS.get(oid)
     return "%s %d" % (d.kind, oid) if d else O.UNSUPPORTED_NAMES.get(oid, "object %d" % oid)
+
+
+# ---------------------------------------------------------------------- the properties window
+# What can be set on an object, by object id: (level-string key, label, kind, scale).  Offsets
+# are shown in blocks and stored in units (x 30).  Keys: gddocs "level string" (see gd/triggers.py).
+EASINGS = ("None", "Ease in out", "Ease in", "Ease out", "Elastic in out", "Elastic in", "Elastic out",
+           "Bounce in out", "Bounce in", "Bounce out", "Exponential in out", "Exponential in", "Exponential out",
+           "Sine in out", "Sine in", "Sine out", "Back in out", "Back in", "Back out")
+FIELDS = {
+    901: [(51, "Target group", "int", 1), (28, "Move X (blocks)", "float", 30), (29, "Move Y (blocks)", "float", 30),
+          (10, "Duration (seconds)", "float", 1), (30, "Easing", "easing", 1), (85, "Easing rate", "float", 1),
+          (58, "Follow the player's X", "bool", 1), (59, "Follow the player's Y", "bool", 1)],
+    1049: [(51, "Target group", "int", 1), (56, "Switch it on (off when unticked)", "bool", 1)],
+    1268: [(51, "Target group", "int", 1), (63, "Delay (seconds)", "float", 1)],
+    1616: [(51, "Group whose triggers stop", "int", 1)],
+    1347: [(51, "Target group", "int", 1), (71, "Group it follows", "int", 1), (72, "X mod", "float", 1),
+           (73, "Y mod", "float", 1), (10, "Duration (seconds)", "float", 1)],
+    1007: [(51, "Target group", "int", 1), (35, "Opacity (0 - 1)", "float", 1), (10, "Duration (seconds)", "float", 1)],
+    899: [(23, "Colour channel", "int", 1), (7, "Red (0 - 255)", "int", 1), (8, "Green (0 - 255)", "int", 1),
+          (9, "Blue (0 - 255)", "int", 1), (35, "Opacity (0 - 1)", "float", 1), (10, "Duration (seconds)", "float", 1)],
+    3022: [(51, "Target group (goes to its first object)", "int", 1)],
+    747: [(54, "Exit portal: blocks above", "float", 30)],
+}
+TRIGGER_FLAGS = [(11, "Touch triggered", "bool", 1), (62, "Spawn triggered", "bool", 1), (87, "Multi trigger", "bool", 1)]
+GROUPS_FIELD = (57, "Groups (e.g. 1, 4)", "groups", 1)
+
+
+def fields_for(objs):
+    """The fields the properties window shows for these objects: groups always, the rest
+    only when they are all the same kind of object."""
+    fields = [GROUPS_FIELD]
+    ids = {o.id for o in objs}
+    if len(ids) == 1:
+        oid = ids.pop()
+        fields += FIELDS.get(oid, [])
+        if oid in FIELDS and oid != 747:
+            fields += TRIGGER_FLAGS
+    return fields
+
+
+def form_values(objs, fields):
+    """{key: text} to show: the objects' common value, "" where they differ or have none."""
+    out = {}
+    for key, _label, kind, scale in fields:
+        values = set()
+        for o in objs:
+            raw = o.raw.get(key)
+            if raw is None or raw == "":
+                values.add("")
+            elif kind == "groups":
+                values.add(", ".join(g for g in str(raw).split(".") if g))
+            elif kind == "bool":
+                values.add("1" if _num(o.raw, key) else "")
+            elif kind == "easing":
+                i = int(_num(o.raw, key))
+                values.add(EASINGS[i] if 0 <= i < len(EASINGS) else "")
+            else:
+                v = _num(o.raw, key) / scale
+                values.add(_fmt(int(v)) if kind == "int" else _fmt(round(v, 4)))
+        out[key] = values.pop() if len(values) == 1 else ""
+    return out
+
+
+def parse_form(fields, texts):
+    """{key: text} from the window -> {key: level-string value, or None to remove it}.
+    Raises ValueError (with a message for the player) on something that is not a number."""
+    out = {}
+    for key, label, kind, scale in fields:
+        text = str(texts.get(key, "")).strip()
+        if kind == "bool":
+            out[key] = "1" if text not in ("", "0") else None
+        elif kind == "groups":
+            groups = [g for g in text.replace(",", " ").replace(".", " ").split() if g]
+            if not all(g.isdigit() and 0 < int(g) < 10000 for g in groups):
+                raise ValueError("%s: whole numbers from 1 to 9999, separated by commas" % label)
+            out[key] = ".".join(str(int(g)) for g in groups) or None
+        elif kind == "easing":
+            out[key] = str(EASINGS.index(text)) if text in EASINGS and text != "None" else None
+        elif text == "":
+            out[key] = None
+        else:
+            try:
+                v = float(text)
+            except ValueError:
+                raise ValueError("%s: \"%s\" is not a number" % (label, text))
+            if kind == "int":
+                if v != int(v) or v < 0:
+                    raise ValueError("%s: a whole number, 0 or more" % label)
+                out[key] = str(int(v))
+            else:
+                out[key] = _fmt(round(v * scale, 4))
+    return out

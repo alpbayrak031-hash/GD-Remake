@@ -34,7 +34,8 @@ from tkinter import filedialog, messagebox
 from . import constants as C
 from . import icons, paths, ui
 from . import objects as O
-from .editor_model import GRID, PALETTE, EdObject, LevelDocument, describe, snap_position
+from .editor_model import (EASINGS, GRID, PALETTE, TRIGGER_LABELS, EdObject, LevelDocument, describe, fields_for,
+                           form_values, is_trigger, parse_form, snap_position)
 from .levelio import LevelFormatError, list_levels
 from .render_tk import BG, SPEED_COLORS, Painter
 
@@ -53,6 +54,8 @@ HELP = """Building
   R   F   V                rotate 90,  flip X,  flip Y
   1 - 9, 0                 choose a tile          Tab   next tab
   G                        half grid (15 units)
+  I                        properties of the selection (or what is under the mouse):
+                           its groups, and what a trigger or teleport portal does
 
 Selecting (S: the Select tool)
   click, Shift + click     select one, add / remove one
@@ -205,6 +208,7 @@ class Editor(Painter):
                   "accent" if st["flipped"] else "quiet", 13, radius=8)
         ui.Button(cv, w - 122, y - 2, 112, h + 4, "PLAY", self.play, "primary", 16, "P", radius=10)
         ui.Button(cv, w - 240, y, 112, h, "Watch bot", self.bot, "normal", 13, "B", radius=8, enabled=not self.busy)
+        ui.Button(cv, w - 362, y, 116, h, "Properties", self.properties, "normal", 13, "I", radius=8)
 
     def _popup_mode(self, x):
         menu = tk.Menu(self.root, tearoff=0)
@@ -252,10 +256,10 @@ class Editor(Painter):
         # --- object tabs and tiles (middle)
         x = 214
         for i, (group, _items) in enumerate(PALETTE):
-            width = 30 + 8 * len(group)
+            width = 22 + 7 * len(group)
             ui.Button(cv, x, 8, width, 28, group, lambda t=i: self._set_tab(t), "accent" if i == self.tab else "quiet",
-                      12, radius=8)
-            x += width + 6
+                      11, radius=8)
+            x += width + 5
         self._tile_ids = [oid for oid, _label in PALETTE[self.tab][1]]
         x = 214
         for n, (oid, label) in enumerate(PALETTE[self.tab][1]):
@@ -292,6 +296,15 @@ class Editor(Painter):
             half = 7 if ghost.phys.arg else 16
             cv.create_rectangle(mx - half, my - half, mx + half, my + half, fill="#FF7AD9" if ghost.phys.arg else "#59E36B",
                                 outline="", tags=tag)
+        elif ghost.deco is not None:
+            d = ghost.deco
+            self.tiles.zoom = min(1.5, (TILE - 18) / max(d.w * d.sx, d.h * d.sy, 20.0))
+            d.x, d.y = mx / self.tiles.zoom, -my / self.tiles.zoom
+            item = self.tiles.draw_deco(d, (tag,))
+            if item is not None:
+                cv.itemconfigure(item, state="normal")
+        elif is_trigger(oid):
+            self._trigger_box(cv, mx, my, 21, oid, None, (tag,))
         elif ghost.phys is not None:
             p = ghost.phys
             span = max(p.maxx - p.minx, p.maxy - p.miny, 30.0)
@@ -365,6 +378,7 @@ class Editor(Painter):
         key("e", lambda: self._set_tool("place" if self.tool == "erase" else "erase"))
         key("<Escape>", self._escape)
         key("g", self._toggle_grid)
+        key("i", self.properties)
         key("h", self._toggle_hit)
         key("<minus>", lambda: self._zoom(-1))
         key("<equal>", lambda: self._zoom(+1))
@@ -464,6 +478,12 @@ class Editor(Painter):
         tag = "u%d" % obj.uid
         if obj.phys is not None:
             self.draw_object(obj.phys, tag)
+        elif obj.deco is not None:
+            self.draw_deco(obj.deco, (tag,))
+        elif is_trigger(obj.id):
+            z = self.zoom
+            target = obj.raw.get(23 if obj.id == 899 else 51)
+            self._trigger_box(self.cv, obj.x * z, -obj.y * z, 13 * z, obj.id, target, (tag,))
         else:
             z = self.zoom
             self.cv.create_rectangle((obj.x - 6) * z, -(obj.y + 6) * z, (obj.x + 6) * z, -(obj.y - 6) * z,
@@ -474,6 +494,21 @@ class Editor(Painter):
         self.cv.addtag_withtag("obj", tag)
         if obj.uid in self._sel_uids:
             self.cv.addtag_withtag("selitem", tag)
+
+    @staticmethod
+    def _trigger_box(cv, cx, cy, half, oid, target, tags):
+        """A trigger as GD's editor shows one: a small box with what it does written on it."""
+        colour = {901: "#FF8F3D", 1049: "#59E36B", 1268: "#B07CFF", 1616: "#FF5A5A", 1347: "#4DC3FF",
+                  1007: "#D5DBE8", 3022: "#3D9BFF"}.get(oid, "#FFD23F")
+        ui.rounded(cv, cx - half, cy - half, cx + half, cy + half, half * 0.3, fill="#141A29", outline=colour,
+                   width=2, tags=tags)
+        label = TRIGGER_LABELS.get(oid, str(oid))
+        size = max(6, int(half * (0.42 if len(label) <= 5 else 0.32)))
+        cv.create_text(cx, cy - (half * 0.22 if target else 0), text=label, fill=colour, font=ui.font(size, True),
+                       tags=tags)
+        if target:
+            cv.create_text(cx, cy + half * 0.42, text=str(target), fill=ui.TEXT, font=ui.font(max(6, size), True),
+                           tags=tags)
 
     # Only what is on screen (and a screen's width either side) is on the canvas: a Tk
     # canvas slows down with every item it holds, so a 25,000-object level would lag.
@@ -860,6 +895,73 @@ class Editor(Painter):
         self._set_selection(self.doc.paste([dict(o.raw) for o in self.selected], width, 0.0))
         self._sync_objects()
         self._view_changed()
+
+    def properties(self):
+        """The properties window for the selection - or, with nothing selected, for the
+        object under the mouse: its groups, and the settings of a trigger or teleport."""
+        objs = self.doc.alive(self.selected)
+        if not objs and self._mouse is not None:
+            under = self.doc.pick(*self._mouse)
+            objs = [under] if under is not None else []
+        if not objs:
+            self._say("Select something first (S), or point at it, then press I.")
+            return
+        fields = fields_for(objs)
+        values = form_values(objs, fields)
+        win = tk.Toplevel(self.root, bg=ui.PANEL, padx=18, pady=14)
+        win.title("Properties")
+        win.transient(self.root)
+        win.resizable(False, False)
+        what = describe(objs[0].id) if len({o.id for o in objs}) == 1 else "objects"
+        tk.Label(win, text="%d %s" % (len(objs), what) if len(objs) > 1 else what, bg=ui.PANEL, fg=ui.TEXT,
+                 font=ui.font(15, True)).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        inputs = {}
+        for row, (key, label, kind, _scale) in enumerate(fields, start=1):
+            tk.Label(win, text=label, bg=ui.PANEL, fg=ui.MUTED, font=ui.font(12)).grid(row=row, column=0, sticky="w",
+                                                                                     padx=(0, 12), pady=3)
+            if kind == "bool":
+                var = tk.StringVar(value="1" if values[key] else "0")
+                tk.Checkbutton(win, variable=var, onvalue="1", offvalue="0", bg=ui.PANEL, activebackground=ui.PANEL,
+                               highlightthickness=0).grid(row=row, column=1, sticky="w")
+            elif kind == "easing":
+                var = tk.StringVar(value=values[key] or "None")
+                menu = tk.OptionMenu(win, var, *EASINGS)
+                menu.configure(bg="#0A0D15", fg=ui.TEXT, activebackground=ui.PANEL_HI, highlightthickness=0, width=16)
+                menu.grid(row=row, column=1, sticky="w")
+            else:
+                var = tk.StringVar(value=values[key])
+                tk.Entry(win, textvariable=var, width=18, relief="flat", bg="#0A0D15", fg=ui.TEXT,
+                         insertbackground=ui.TEXT, font=ui.font(13), highlightthickness=1,
+                         highlightbackground=ui.LINE, highlightcolor=ui.CYAN).grid(row=row, column=1, sticky="w")
+            inputs[key] = var
+        error = tk.Label(win, text="", bg=ui.PANEL, fg=ui.YELLOW, font=ui.font(11), wraplength=320, justify="left")
+        error.grid(row=len(fields) + 1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        def apply(_e=None):
+            try:
+                changes = parse_form(fields, {k: v.get() for k, v in inputs.items()})
+            except ValueError as exc:
+                error.configure(text=str(exc))
+                return
+            changed = self.doc.set_values(objs, changes)
+            if self.selected:
+                self._set_selection(changed)
+            win.destroy()
+            self._sync_objects()
+            self._say("Properties set on %d object%s." % (len(changed), "" if len(changed) == 1 else "s"))
+            self.cv.focus_set()
+
+        buttons = tk.Frame(win, bg=ui.PANEL)
+        buttons.grid(row=len(fields) + 2, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        tk.Button(buttons, text="Cancel", command=win.destroy, highlightbackground=ui.PANEL).pack(side="right", padx=4)
+        tk.Button(buttons, text="Apply", command=apply, default="active",
+                  highlightbackground=ui.PANEL).pack(side="right")
+        win.bind("<Return>", apply)
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.update_idletasks()
+        win.geometry("+%d+%d" % (self.root.winfo_rootx() + 120, self.root.winfo_rooty() + 90))
+        win.grab_set()
+        return win
 
     def _toggle_grid(self):
         self.grid = GRID / 2 if self.grid == GRID else GRID

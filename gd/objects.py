@@ -99,6 +99,15 @@ _add(HAZARD, 6, 6.4, _ids(178))
 _add(HAZARD, 25, 6, _ids(919))
 _add(HAZARD, 4, 8, _ids(179))
 
+# Blocks gd-sim does not list: hitboxes from Open-GD/OpenGD's table (Source/LongData.cpp,
+# _pHitboxes), which is taken from the game; all centred on the object.
+_add(SOLID, 43, 22, (329,), None, "hitbox from OpenGD (LongData.cpp)")
+_add(SOLID, 15, 1.5, (1154,), None, "hitbox from OpenGD (LongData.cpp)")
+_add(SOLID, 15, 2, (1563,), None, "hitbox from OpenGD (LongData.cpp)")
+_add(SOLID, 12, 12, (1564,), None, "hitbox from OpenGD (LongData.cpp)")
+_add(SOLID, 62, 32, (1568,), None, "hitbox from OpenGD (LongData.cpp)")
+_add(SOLID, 32, 32, (1569,), None, "hitbox from OpenGD (LongData.cpp)")
+
 # Saws: gd-sim stores the collision RADIUS in both size fields.
 for _radius, _saw_ids in (
         (32.3, (88, 186, 740, 1705)), (21.6, (89, 1706)), (12, (98,)), (15.660001, (183,)),
@@ -168,10 +177,10 @@ _add(NOOP, 0, 0, (45, 46), None, "mirror portal: visual only")
 # Known gameplay-relevant IDs that are deliberately NOT simulated.  Listing them
 # only makes the importer's report readable.
 UNSUPPORTED_NAMES = {
-    29: "background colour trigger", 30: "ground colour trigger", 31: "start position",
+    31: "start position",
     32: "enable trail", 33: "disable trail", 142: "secret coin",
     749: "teleport portal exit",
-    899: "colour trigger", 914: "text", 1006: "pulse trigger",
+    914: "text", 1006: "pulse trigger",
     1007: "alpha trigger",
     1329: "user coin", 1346: "rotate trigger", 1347: "follow trigger",
     1520: "shake trigger", 1585: "animate trigger", 1594: "toggle orb",

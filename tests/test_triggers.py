@@ -159,6 +159,45 @@ class Touch(unittest.TestCase):
         self.assertTrue(p.dead)
 
 
+class FollowStopAlpha(unittest.TestCase):
+    def test_a_group_follows_another_ones_moves(self):
+        def extra(b):
+            b.add(1, 900, 615, k57="6")                                    # what follows (out of the way)
+            b.add(T.FOLLOW, 0, 200, k51=6, k71=5, k72=0.5, k73=-1, k10=5)
+            b.add(T.MOVE, 30, 230, k51=5, k28=60, k29=90, k10=0.5)
+        sim = build(extra, wall_group=5)
+        run(sim, 240)
+        self.assertAlmostEqual(sim.trig.moved[5][0], 60.0, places=6)
+        self.assertAlmostEqual(sim.trig.moved[6][0], 30.0, places=6)
+        self.assertAlmostEqual(sim.trig.moved[6][1], -90.0, places=6)
+
+    def test_a_stop_trigger_halts_a_move_and_a_waiting_spawn(self):
+        def extra(b):
+            b.add(T.MOVE, 0, 200, k51=5, k29=600, k10=2.0, k57="20")       # started by a trigger in group 20
+            b.add(T.SPAWN, 0, 260, k51=21, k63=1.0, k57="20")
+            b.add(T.TOGGLE, 3000, 300, k51=5, k56=0, k57="21", k62=1)
+            b.add(T.STOP, 120, 200, k51=20)
+        sim = build(extra, wall_group=5)
+        run(sim, 400)
+        self.assertEqual(sim.trig.moves, ())
+        self.assertEqual(sim.trig.spawns, ())
+        self.assertLess(sim.trig.moved[5][1], 600.0 * 0.5, "stopped part of the way up")
+        self.assertNotIn(5, sim.trig.toggles, "the spawn never happened")
+
+    def test_alpha_fades_the_drawing_not_the_collision(self):
+        def extra(b):
+            b.add(T.ALPHA, 0, 200, k51=5, k35=0, k10=0.5)
+        sim = build(extra, wall_group=5)
+        run(sim, 60)
+        k = sim.level.triggers.group_clusters[5][0]
+        self.assertAlmostEqual(sim.trig.opacity(5), 1.0 - 60 / 120.0, delta=0.02)
+        self.assertFalse(sim.trig.hidden(k))
+        run(sim, 100)
+        self.assertTrue(sim.trig.hidden(k), "faded out: not drawn")
+        p = run(sim, 1200)
+        self.assertTrue(p.dead, "but still solid")
+
+
 class Teleports(unittest.TestCase):
     def test_the_portal_puts_the_player_at_its_exit(self):
         sim = build(lambda b: b.add(747, 300, 45, k54=400))

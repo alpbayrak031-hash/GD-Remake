@@ -34,8 +34,7 @@ SECRET = "Wmfd2893gb7"                 # the common client value, see above
 TIMEOUT = 45.0                         # seconds to wait for a level (the server can be slow to send a big one)
 MAX_REPLY = 40_000_000                 # bytes; a huge level is a few MB
 # features of a level that this engine does not have, by object id (see gd/objects.py)
-MISSING = {1346: "rotating objects", 1347: "objects that follow others", 1007: "fading objects (alpha triggers)",
-           1594: "toggle orbs", 1616: "stop triggers", 1815: "collision triggers", 1611: "count triggers",
+MISSING = {1346: "rotating objects", 1594: "toggle orbs", 1815: "collision triggers", 1611: "count triggers",
            1913: "camera triggers", 1914: "camera triggers", 1916: "camera triggers"}
 
 

@@ -8,6 +8,12 @@ What is simulated
                     drawn) or back on
   spawn     (1268)  after `Spawn Delay` seconds, fires every trigger in its target group
   teleport  (3022)  puts the player on the first object of its target group
+  follow    (1347)  for `Duration` seconds, its target group copies every move of another
+                    group (key 71), times X Mod / Y Mod (72 / 73)
+  stop      (1616)  stops what the triggers in its target group started: their moves,
+                    follows and waiting spawns
+  alpha     (1007)  fades its target group to `Opacity` (35) over `Duration` - only how it
+                    is drawn: in GD a faded object still collides
   teleport portal (747, gd/objects.py)  handled in gd/sim.py
 How a trigger fires
   when the player passes its x position; or, with "Touch Triggered", when the player
@@ -18,7 +24,8 @@ Sources
   * Level-string keys: Wyliemaster/gddocs "level string" (10 duration, 11 touch triggered,
     28/29 offset x/y, 30 easing, 51 target group, 56 activate group, 57 groups,
     58/59 lock to player x/y, 62 spawn triggered, 63 spawn delay, 85 easing rate,
-    87 multi trigger) and its easing list (0 none ... 18 back out).
+    87 multi trigger, 35 opacity, 71 follow group, 72 / 73 x / y mod) and its easing list
+    (0 none ... 18 back out).
   * Offsets are stored in game units (30 per block): SPWN's standard library writes
     MOVE_X as "units (10 per grid square) * 3" (Spu7Nix/SPWN-language, std/group.spwn).
   * The easing curves are cocos2d-x's (CCActionEase / CCTweenFunction), the engine GD is
@@ -43,17 +50,22 @@ ESTIMATES - nothing here is decompiled:
   * moving blocks do not carry the player along: the player is only stopped or killed by
     them where they are on each step
   * the default easing rate, when a level does not store one, is 2
-Not simulated: rotate, follow, alpha (fading does not change collision), stop, pulse,
-colour, count and collision triggers, toggle orbs, 2.2 area and keyframe triggers.
+  * a follow copies moves as they happen (a chain of follows is followed up to 8 deep);
+    a faded group is drawn hidden below 30 % opacity and as normal above it
+Not simulated: rotate, pulse, colour, count, item and collision triggers, toggle orbs,
+camera triggers, 2.2 area and keyframe triggers.
 """
 import bisect
 import math
 
 from .constants import SECTION_SIZE
 
-MOVE, TOGGLE, SPAWN, TELEPORT = 901, 1049, 1268, 3022
-TRIGGER_IDS = (MOVE, TOGGLE, SPAWN, TELEPORT)
-NAMES = {MOVE: "move", TOGGLE: "toggle", SPAWN: "spawn", TELEPORT: "teleport"}
+MOVE, TOGGLE, SPAWN, TELEPORT, FOLLOW, STOP, ALPHA = 901, 1049, 1268, 3022, 1347, 1616, 1007
+TRIGGER_IDS = (MOVE, TOGGLE, SPAWN, TELEPORT, FOLLOW, STOP, ALPHA)
+NAMES = {MOVE: "move", TOGGLE: "toggle", SPAWN: "spawn", TELEPORT: "teleport", FOLLOW: "follow", STOP: "stop",
+         ALPHA: "alpha"}
+HIDDEN_BELOW = 0.3                   # EST: a group faded below this opacity is drawn hidden
+MAX_FOLLOW_DEPTH = 8
 TPS = 240
 TOUCH_SIZE = 30.0                    # EST: the box a touch-triggered trigger is touched with
 MAX_WAITING = 4096                   # spawns waiting at once; more are dropped (a runaway spawn loop)
@@ -158,7 +170,7 @@ def ease(kind, rate, t):
 # ---------------------------------------------------------------------- level side
 class Trigger:
     __slots__ = ("uid", "id", "x", "y", "groups", "target", "how", "multi", "dx", "dy", "ticks",
-                 "easing", "rate", "lock_x", "lock_y", "on", "delay", "half")
+                 "easing", "rate", "lock_x", "lock_y", "on", "delay", "half", "opacity", "source", "mod_x", "mod_y")
 
     def __repr__(self):
         return "<%s trigger #%d at x=%.0f -> group %d>" % (NAMES[self.id], self.uid, self.x, self.target)
@@ -174,19 +186,25 @@ def parse(raw, oid, x, y, groups, num):
     t.how = "spawn" if num(raw, 62) else "touch" if num(raw, 11) else "x"
     t.multi = bool(num(raw, 87))
     t.dx, t.dy = num(raw, 28), num(raw, 29)
-    t.ticks = max(0, int(round(num(raw, 10) * TPS))) if oid == MOVE else 0
+    t.ticks = max(0, int(round(num(raw, 10) * TPS))) if oid in (MOVE, FOLLOW, ALPHA) else 0
     t.easing = int(num(raw, 30))
     t.rate = num(raw, 85, 2.0) or 2.0
     t.lock_x, t.lock_y = bool(num(raw, 58)), bool(num(raw, 59))
     t.on = bool(num(raw, 56))
     t.delay = max(0, int(round(num(raw, 63) * TPS)))
     t.half = TOUCH_SIZE / 2.0 * (abs(num(raw, 32, 1.0)) or 1.0)
+    t.opacity = max(0.0, min(1.0, num(raw, 35, 1.0)))
+    t.source = int(num(raw, 71))
+    t.mod_x, t.mod_y = num(raw, 72, 1.0), num(raw, 73, 1.0)
+    if oid == FOLLOW and t.source <= 0:
+        return None
     return t
 
 
 class Cluster:
-    """The objects that share the same moving/toggled groups: they always move together."""
-    __slots__ = ("index", "groups", "objects", "sections", "minx", "maxx", "miny", "maxy")
+    """The objects that share the same moving/toggled groups: they always move together.
+    `deco` is the decoration in those groups (only drawn)."""
+    __slots__ = ("index", "groups", "objects", "deco", "sections", "minx", "maxx", "miny", "maxy", "faded_by")
 
     def query(self, minx, maxx, miny, maxy, stamp):
         out = []
@@ -202,7 +220,7 @@ class Cluster:
 class Setup:
     """Everything about a level's triggers that never changes while it is played."""
 
-    def __init__(self, triggers, objects, anchors):
+    def __init__(self, triggers, objects, anchors, deco=()):
         triggers.sort(key=lambda t: (t.x, t.uid))
         self.triggers = triggers
         self.passed = [t for t in triggers if t.how == "x"]
@@ -215,30 +233,44 @@ class Setup:
             for g in t.groups:
                 self.by_group.setdefault(g, []).append(t)
         self.anchors = anchors                 # group -> (x, y, groups) of its first object
-        dynamic = {t.target for t in triggers if t.id in (MOVE, TOGGLE)}
-        self.static = []
+        self.by_uid = {t.uid: t for t in triggers}
+        faders = {t.target for t in triggers if t.id == ALPHA}
+        dynamic = {t.target for t in triggers if t.id in (MOVE, TOGGLE, FOLLOW, ALPHA)}
+        self.static, self.static_deco = [], []
         clusters = {}
         for o in objects:
             key = tuple(sorted(g for g in o.groups if g in dynamic))
             if key:
-                clusters.setdefault(key, []).append(o)
+                clusters.setdefault(key, ([], []))[0].append(o)
             else:
                 self.static.append(o)
+        for d in deco:
+            key = tuple(sorted(g for g in d.groups if g in dynamic))
+            if key:
+                clusters.setdefault(key, ([], []))[1].append(d)
+            else:
+                self.static_deco.append(d)
         self.clusters = []
         self.group_clusters = {}               # group -> indices of the clusters it moves
-        for key, objs in clusters.items():
+        for key, (objs, decos) in clusters.items():
             c = Cluster()
-            c.index, c.groups, c.objects = len(self.clusters), key, objs
+            c.index, c.groups, c.objects, c.deco = len(self.clusters), key, objs, decos
+            c.faded_by = tuple(g for g in key if g in faders)
             c.sections = {}
             for o in objs:
                 for s in range(int(o.minx // SECTION_SIZE), int(o.maxx // SECTION_SIZE) + 1):
                     c.sections.setdefault(s, []).append(o)
-            c.minx, c.maxx = min(o.minx for o in objs), max(o.maxx for o in objs)
-            c.miny, c.maxy = min(o.miny for o in objs), max(o.maxy for o in objs)
+            if objs:
+                c.minx, c.maxx = min(o.minx for o in objs), max(o.maxx for o in objs)
+                c.miny, c.maxy = min(o.miny for o in objs), max(o.maxy for o in objs)
+            else:                              # decoration only: never in the way
+                c.minx = c.miny = 1e18
+                c.maxx = c.maxy = -1e18
             self.clusters.append(c)
             for g in key:
                 self.group_clusters.setdefault(g, []).append(c.index)
         self.cluster_of = {o.uid: c.index for c in self.clusters for o in c.objects}
+        self.physical = [c for c in self.clusters if c.objects]     # the ones collisions need to look at
 
 
 # ---------------------------------------------------------------------- one play-through
@@ -272,15 +304,18 @@ class Run:
         self.spawns = ()                       # (tick, trigger) waiting to fire, in tick order
         self.fired = frozenset()               # uids of touch/spawn triggers that may not fire again
         self.last = None                       # the player's position on the previous step
+        self.follows = ()                      # running follows: (trigger, ticks done)
+        self.fades = {}                        # group -> (start tick, ticks, from, to): alpha triggers
 
     def snapshot(self):
         return (self.cursor, dict(self.moved), list(self.offsets), dict(self.toggles), self.order,
-                list(self.off), self.moves, self.spawns, self.fired, self.last)
+                list(self.off), self.moves, self.spawns, self.fired, self.last, self.follows, dict(self.fades))
 
     def restore(self, snap):
         (self.cursor, moved, offsets, toggles, self.order, off, self.moves, self.spawns, self.fired,
-         self.last) = snap
+         self.last, self.follows, fades) = snap
         self.moved, self.offsets, self.toggles, self.off = dict(moved), list(offsets), dict(toggles), list(off)
+        self.fades = dict(fades)
 
     # -- where things are now --------------------------------------------------------
     def query(self, minx, maxx, miny, maxy, out):
@@ -288,7 +323,7 @@ class Run:
         the ones that never move)."""
         setup = self.setup
         stamp = self.sim.level.next_stamp()
-        for c in setup.clusters:
+        for c in setup.physical:
             if self.off[c.index]:
                 continue
             dx, dy = self.offsets[c.index]
@@ -313,6 +348,28 @@ class Run:
                 dx += m[0]
                 dy += m[1]
         return dx, dy
+
+    def opacity(self, group, tick=None):
+        f = self.fades.get(group)
+        if f is None:
+            return 1.0
+        start, ticks, a, b = f
+        tick = self.sim.tick if tick is None else tick
+        if ticks <= 0 or tick >= start + ticks:
+            return b
+        return a + (b - a) * (tick - start) / float(ticks)
+
+    def hidden(self, k):
+        """Is cluster k not drawn: switched off, or faded out?"""
+        if self.off[k]:
+            return True
+        c = self.setup.clusters[k]
+        if c.faded_by:
+            alpha = 1.0
+            for g in c.faded_by:
+                alpha *= self.opacity(g)
+            return alpha < HIDDEN_BELOW
+        return False
 
     def enabled(self, groups):
         latest = None
@@ -344,12 +401,14 @@ class Run:
             # only what was already due: a spawn loop with no delay goes round once per step
             due = [s for s in self.spawns if s[0] <= sim.tick]
             self.spawns = self.spawns[len(due):]
-            for _tick, group in due:
+            for _tick, group, _source in due:
                 for t in setup.by_group.get(group, ()):
                     if t.uid not in self.fired and self.enabled(t.groups):
                         self.fire(t, p)
         if self.moves:
             self._advance(p)
+        if self.follows:
+            self.follows = tuple((f, done + 1) for f, done in self.follows if done + 1 < max(1, f.ticks))
         self.last = (p.x, p.y)
 
     def fire(self, t, p):
@@ -366,11 +425,21 @@ class Run:
             for i in self.setup.group_clusters.get(t.target, ()):
                 self.off[i] = not self.enabled(self.setup.clusters[i].groups)
         elif t.id == SPAWN:
-            due = (self.sim.tick + t.delay, t.target)
-            if due not in self.spawns and len(self.spawns) < MAX_WAITING:
+            due = self.sim.tick + t.delay
+            if len(self.spawns) < MAX_WAITING and not any(s[0] == due and s[1] == t.target for s in self.spawns):
                 spawns = list(self.spawns)
-                bisect.insort(spawns, due)
+                bisect.insort(spawns, (due, t.target, t.uid))
                 self.spawns = tuple(spawns)
+        elif t.id == FOLLOW:
+            if len(self.follows) < MAX_MOVES:
+                self.follows = self.follows + ((t, 0),)
+        elif t.id == ALPHA:
+            self.fades[t.target] = (self.sim.tick, t.ticks, self.opacity(t.target), t.opacity)
+        elif t.id == STOP:
+            g, by_uid = t.target, self.setup.by_uid
+            self.moves = tuple(m for m in self.moves if g not in m[0].groups)
+            self.follows = tuple(f for f in self.follows if g not in f[0].groups)
+            self.spawns = tuple(s for s in self.spawns if g not in by_uid[s[2]].groups)
         elif t.id == TELEPORT:
             anchor = self.setup.anchors.get(t.target)
             if anchor is not None:
@@ -396,7 +465,7 @@ class Run:
                 running.append((t, done))
         self.moves = tuple(running)
 
-    def _move(self, group, dx, dy):
+    def _move(self, group, dx, dy, depth=0):
         if not dx and not dy:
             return
         m = self.moved.get(group, (0.0, 0.0))
@@ -404,3 +473,7 @@ class Run:
         clusters = self.setup.clusters
         for i in self.setup.group_clusters.get(group, ()):
             self.offsets[i] = self.offset(clusters[i].groups)
+        if self.follows and depth < MAX_FOLLOW_DEPTH:
+            for f, _done in self.follows:
+                if f.source == group:
+                    self._move(f.target, dx * f.mod_x, dy * f.mod_y, depth + 1)

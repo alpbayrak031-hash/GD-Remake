@@ -435,10 +435,57 @@ class EditorSelection(unittest.TestCase):
     def test_new_palette_objects_are_all_simulated(self):
         from gd import objects as O
         from gd.editor_model import PALETTE, EdObject
-        for _group, items in PALETTE:
+        for group, items in PALETTE:
+            if group in ("Triggers", "Decoration"):         # no physics by design (tested below)
+                continue
             for oid, label in items:
                 self.assertIn(oid, O.OBJECTS, label)
                 self.assertIsNotNone(EdObject({1: str(oid), 2: "15", 3: "15"}).phys, label)
+
+
+class EditorTriggersAndDecoration(unittest.TestCase):
+    """The editor's Triggers and Decoration tabs and its properties window (the logic)."""
+
+    def test_every_new_palette_object_is_something(self):
+        from gd.editor_model import PALETTE, EdObject, is_trigger
+        tabs = dict(PALETTE)
+        for oid, label in tabs["Triggers"]:
+            self.assertTrue(is_trigger(oid), label)
+        for oid, label in tabs["Decoration"]:
+            o = EdObject({1: str(oid), 2: "15", 3: "15"})
+            self.assertIsNone(o.phys, label)
+            self.assertIsNotNone(o.deco, label)
+        self.assertIn((747, "Teleport"), tabs["Other portals"])
+
+    def test_a_trigger_set_up_in_the_window_works_in_the_level(self):
+        from gd.editor_model import LevelDocument, fields_for, form_values, parse_form
+        from gd.sim import Simulation
+        doc = LevelDocument()
+        for row in range(12):                           # a wall in group 3 ...
+            wall = doc.place(1, 615, 15 + 30 * row)
+            doc.set_values([wall], parse_form(fields_for([wall]), {57: "3"}))
+        doc.place(1, 2415, 345)                         # (the level goes on past it)
+        trigger = doc.place(1049, 300, 200)             # ... which a toggle trigger switches off
+        fields = fields_for([trigger])
+        self.assertEqual([f[0] for f in fields], [57, 51, 56, 11, 62, 87])
+        (trigger,) = doc.set_values([trigger], parse_form(fields, {51: "3", 56: "0"}))
+        self.assertEqual(form_values([trigger], fields)[51], "3")
+        sim = Simulation(doc.to_level())
+        while not (sim.dead or sim.finished) and sim.tick < 1200:
+            sim.step(False)
+        self.assertFalse(sim.dead, sim.player.death_cause)
+
+    def test_bad_input_is_explained_and_units_are_converted(self):
+        from gd.editor_model import fields_for, parse_form, EdObject
+        move = [EdObject({1: "901", 2: "0", 3: "0"})]
+        fields = fields_for(move)
+        out = parse_form(fields, {51: "2", 28: "1.5", 30: "Bounce out", 58: "1"})
+        self.assertEqual((out[51], out[28], out[30], out[58], out[29]), ("2", "45", "9", "1", None))
+        for bad in ({51: "two"}, {51: "-1"}, {57: "1, x"}):
+            with self.assertRaises(ValueError):
+                parse_form(fields, bad)
+        mixed = [EdObject({1: "1", 2: "0", 3: "0"}), EdObject({1: "901", 2: "0", 3: "0"})]
+        self.assertEqual([f[0] for f in fields_for(mixed)], [57], "different kinds: only their groups")
 
 
 class Icons(unittest.TestCase):
