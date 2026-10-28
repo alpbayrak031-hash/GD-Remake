@@ -24,6 +24,7 @@ Analyzer   for one concrete solution: how far each press can move earlier or lat
            which removes the solver's "last possible moment" bias and makes the bot's
            replay look like something a person would do.
 """
+import time
 from .autoplay import solve
 from .macros import InputSequence
 from .sim import Simulation
@@ -33,15 +34,30 @@ last_reach = 0.0        # how far the solver got in the most recent rate() call 
 SNAP_EVERY = 240
 
 
+# player attributes that cannot change what happens next (or end the run when they do)
+_NOT_STATE = frozenset(("death_cause", "world", "fix_gravity_bug", "strict_taps", "no_flip_push"))
+
+
 def _signature(sim):
-    p = sim.player
-    return (p.x, p.y, p.y_vel, p.mode, p.upside_down, p.mini, p.speed, p.can_jump, p.on_ground,
-            p.is_jumping, p.jump_unused, p.holding_jump, p.velocity_uncapped, p.robot_boost_charge,
-            p.robot_boost_invalidated, p.is_dashing, p.dash_y, p.is_on_slope, p.slope, p.snap_obj,
-            p.snap_distance, p.last_flip_tick, p.last_spider_tick, sim.floor, sim.ceiling,
-            len(p.used), len(sim.destroyed),
-            None if sim.player2 is None else (sim.player2.y, sim.player2.y_vel, sim.player2.mode,
-                                              sim.player2.upside_down, sim.player2.can_jump))
+    """Everything that decides what happens next.  Two runs with equal signatures at the
+    same tick have the same future - so it takes every attribute of the player (its angle
+    matters next to objects placed at an angle, its slope and orb state, where it was a step
+    ago...), what the triggers have done and exactly which objects were used.  An unequal
+    signature is always safe: it only means a run is simulated a little further."""
+    return (_player_state(sim.player), None if sim.player2 is None else _player_state(sim.player2),
+            sim.floor, sim.ceiling, frozenset(sim.destroyed), _trigger_state(sim))
+
+
+def _player_state(p):
+    return tuple(v for k, v in p.__dict__.items() if k not in _NOT_STATE)
+
+
+def _trigger_state(sim):
+    t = sim.trig
+    if t is None:
+        return None
+    return (t.cursor, t.fired, t.order, t.spawns, t.moves, t.follows,
+            tuple(t.moved.items()), tuple(t.toggles.items()), tuple(t.fades.items()))
 
 
 def _states_from(events, start):
@@ -67,12 +83,23 @@ class Analyzer:
         self.set_events(list(sequence.events))
 
     # ------------------------------------------------------------------ reference run
-    def set_events(self, events):
+    def set_events(self, events, start=0):
+        """Make `events` the reference run.  Everything before tick `start` is unchanged
+        from the previous reference, so only the rest is simulated again."""
         self.events = events
         sim = self.sim
-        sim.reset()
-        self.snaps, self.sigs = {}, []
-        states = _states_from(events, 0)
+        start = (start // SNAP_EVERY) * SNAP_EVERY
+        while start > 0 and start not in getattr(self, "snaps", {}):
+            start -= SNAP_EVERY
+        if start <= 0:
+            sim.reset()
+            self.snaps, self.sigs = {}, []
+            start = 0
+        else:
+            sim.restore(self.snaps[start])
+            self.snaps = {k: v for k, v in self.snaps.items() if k <= start}
+            del self.sigs[start:]
+        states = _states_from(events, start)
         while not sim.dead and not sim.finished:
             if sim.tick % SNAP_EVERY == 0:
                 self.snaps[sim.tick] = sim.snapshot()
@@ -153,10 +180,19 @@ class Analyzer:
                         "later": late, "ticks": early + late + 1})
         return out
 
-    def centre(self, passes=2):
+    def centre(self, passes=2, budget=None, progress=None):
+        """Move every input to the middle of the window in which it still works.  budget:
+        seconds; once spent, the inputs not reached yet stay where they are.  progress(f)
+        is told how far through the inputs it is (0..1)."""
+        end = None if budget is None else time.perf_counter() + budget
         for _ in range(passes):
             moved = False
-            for g in range(len(self._groups())):
+            count = len(self._groups())
+            for g in range(count):
+                if end is not None and time.perf_counter() > end:
+                    return InputSequence(self.events, self.meta)
+                if progress is not None:
+                    progress(g / float(count))
                 kind, idxs, room_early, room_late = self._groups()[g]
                 early = self._limit(idxs, -1, room_early)
                 late = self._limit(idxs, +1, room_late)
@@ -164,7 +200,7 @@ class Analyzer:
                 if shift:
                     trial, first, last = self._shifted(idxs, shift)
                     if self._try(trial, first, last):
-                        self.set_events(trial)
+                        self.set_events(trial, first)
                         moved = True
             if not moved:
                 break
@@ -217,8 +253,9 @@ def rate(level, chunks=(32, 24, 16, 12, 8, 6, 4), max_nodes=250000, info=None, c
     rating is otherwise spent on them.  To keep the answer what a full search would say,
     the grids just coarser than the one that works are tried again without it, as long as
     they only stalled (it assumes, like the rest of this, that a coarser grid does not
-    work where a finer one was proven not to).  progress(chunk, phase, x) is called as
-    the search gets further.
+    work where a finer one was proven not to).  progress(chunk, phase, x, note) is called
+    as the search gets further; note is "first" for a grid's first phase, "again" for the
+    others and "recheck" for the full search of a grid that stalled.
     """
     global last_reach
     sim = Simulation(level)
@@ -226,13 +263,14 @@ def rate(level, chunks=(32, 24, 16, 12, 8, 6, 4), max_nodes=250000, info=None, c
     limit_x = None
     stalled = []                                       # coarser grids that stalled, nearest last
 
-    def attempt(chunk, stall_steps):
+    def attempt(chunk, stall_steps, recheck=False):
         """The grid on every phase -> (first route or None, did a failure only stall?)"""
         global last_reach
         nonlocal limit_x
         first = None
-        for phase in sorted({(i * chunk) // phases for i in range(phases)}):
-            hook = None if progress is None else (lambda x, _n, c=chunk, ph=phase: progress(c, ph, x))
+        for n, phase in enumerate(sorted({(i * chunk) // phases for i in range(phases)})):
+            note = "recheck" if recheck else "again" if n else "first"
+            hook = None if progress is None else (lambda x, _n, c=chunk, ph=phase, w=note: progress(c, ph, x, w))
             seq = solve(sim, chunk=chunk, max_nodes=max_nodes, phase=phase, strict=strict, check=check,
                         allow_push=allow_push, stall=stall_steps, progress=hook)
             last_reach = max(last_reach, sim.solver_reach)
@@ -249,7 +287,7 @@ def rate(level, chunks=(32, 24, 16, 12, 8, 6, 4), max_nodes=250000, info=None, c
             continue
         # a stalled grid just above this one might still work with a full search
         while stalled:
-            again, _ = attempt(stalled[-1], None)
+            again, _ = attempt(stalled[-1], None, recheck=True)
             if again is None:
                 break
             chunk, result = stalled.pop(), again

@@ -365,8 +365,14 @@ where no route is found either way, real Bloodbath in 47 s and 126 MB instead of
 and 330 MB.
 
 While the bot works, **Watch bot** in the editor shows how far into the level it has
-got and what it is trying, with a **Stop** button; on My Levels, the level being
-measured shows the same as a small bar.
+got and what it is doing - trying a grid, checking a route it found from another start,
+double-checking a coarser grid - with a **Stop** button; on My Levels, the level being
+measured shows the same as a small bar. The last tenth of the editor's bar is the replay
+it shows you: every input is moved to the middle of the window in which it still works,
+for at most 6 seconds, and the result is only shown if it plays to the end (otherwise
+you see the route exactly as the search found it). Whether a moved input still works is
+checked against the whole state of the game - the icon's angle, what the triggers have
+done, which objects were used - not just where the icon is.
 
 A **held jump** is a jump you start by already having the button down when you land: the
 jump then begins by itself on the first step you are back on the ground, a touch more

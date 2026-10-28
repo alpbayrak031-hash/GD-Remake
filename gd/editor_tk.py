@@ -38,10 +38,12 @@ from .editor_model import (EASINGS, GRID, PALETTE, TRIGGER_LABELS, EdObject, Lev
                            form_values, is_trigger, parse_form, snap_position)
 from .levelio import LevelFormatError, list_levels
 from .render_tk import BG, SPEED_COLORS, Painter
+from .sim import Simulation
 
 LEVELS = paths.USER_LEVELS            # where the player's levels are kept (Documents/GD Remake/levels)
 BACKUPS = paths.BACKUPS
 AUTOSAVE_MS = 1000            # how often the editor checks for changes to write
+REPLAY_SECONDS = 6.0          # the most "Watch bot" spends making its replay neat (see Editor.bot)
 MOD = "Command" if sys.platform == "darwin" else "Control"
 ZOOMS = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
 TOP_H, BAR_H, TILE = 56, 150, 62
@@ -1160,18 +1162,32 @@ class Editor(Painter):
         def progress(fraction, text):
             self.bot_progress = (fraction, text)          # read by poll() on the window's side
 
+        def finishes(inputs):
+            sim = Simulation(level)                  # what the game view will play: default settings
+            sim.run(inputs)
+            return sim.finished
+
         def work():
             from .analysis import Analyzer
-            from .timing import Cancelled, describe, search
+            from .timing import SEARCH_SHARE, Cancelled, describe, search
             try:
                 found, seq = search(level, wait=wait, progress=progress)   # the same measurement My Levels shows
                 if seq is None:
                     result["text"] = None
                     result["why"] = found.get("reason")
                     return
+                # a nicer replay: every input moved to the middle of the window where it works -
+                # for a few seconds at most, and only shown if it really finishes (otherwise the
+                # route the search found, which does)
+                progress(SEARCH_SHARE, "preparing the replay")
                 an = Analyzer(level, seq)
-                result["replay"] = an.centre(passes=1)
-                presses = an.report(worst=1)["presses"]
+                replay = an.centre(passes=1, budget=REPLAY_SECONDS,
+                                   progress=lambda f: (wait(), progress(SEARCH_SHARE + (1 - SEARCH_SHARE) * f,
+                                                                        "preparing the replay")))
+                if not finishes(replay):
+                    replay = seq
+                result["replay"] = replay
+                presses = sum(1 for _tick, down in replay.events if down)
                 if found["state"] == "ok":
                     tight = "Tightest jump: %s%s." % (describe(found)[0], " (a single physics step - frame perfect)"
                                                       if found["ticks"] == 1 else "")

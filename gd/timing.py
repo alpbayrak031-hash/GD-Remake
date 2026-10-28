@@ -63,6 +63,7 @@ LONGEST = 8.0
 # analysis.rate): the number shown stays what a full search finds - it only comes much
 # sooner, because the grids far from the answer are no longer searched to the end.
 STALL_STEPS = 250000
+SEARCH_SHARE = 0.9               # of a progress bar: the search; what is left is for preparing a replay
 HOLD_PHASES = 6                  # grid phases a route with held jumps must work on (see analysis.rate)
 # The level pack's difficulty bands (tools/make_level_pack.py), as milliseconds
 BANDS = ((100, "easy"), (50, "medium"), (30, "hard"), (0, "very hard"))
@@ -120,8 +121,9 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None, progres
     `wait` is called regularly during the search; it may block or raise Cancelled.
     max_nodes / budget: per attempt / per level; by default the standard ones, scaled up
     for a long level (scale_for).
-    progress(fraction, text): how far into the level the bot has got (it only goes up)
-    and what it is trying, e.g. (0.64, "trying a 17 ms grid")."""
+    progress(fraction, text): how far the measurement has got (it only goes up, and stops
+    at SEARCH_SHARE: the rest is the caller's - the editor uses it to prepare the replay)
+    and what it is doing, e.g. (0.58, "trying a 17 ms grid")."""
     scale = scale_for(level)
     if max_nodes is None:
         max_nodes = int(MAX_NODES * scale)
@@ -142,11 +144,18 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None, progres
     def report(text, x):
         if progress is not None:
             best[0] = max(best[0], min(1.0, x / level.end_x))
-            progress(best[0], text)
+            progress(best[0] * SEARCH_SHARE, text)
 
     def on_grid(stage):
-        def hook(chunk, _phase, x):
-            report("%s a %d ms grid" % (stage, to_ms(chunk)) if chunk > 1 else "%s every physics step" % stage, x)
+        def hook(chunk, _phase, x, note="first"):
+            grid = "a %d ms grid" % to_ms(chunk) if chunk > 1 else "every physics step"
+            if note == "again":
+                text = "found a route - checking %s from another start" % grid
+            elif note == "recheck":
+                text = "double-checking %s" % grid
+            else:
+                text = "%s %s" % (stage, grid)
+            report(text, x)
         return hook
 
     def on_solve(text):

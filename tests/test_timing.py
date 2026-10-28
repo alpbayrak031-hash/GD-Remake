@@ -214,6 +214,41 @@ class Faster(unittest.TestCase):
         self.assertTrue(any("ms grid" in text for _f, text in seen), seen[:5])
 
 
+class Replays(unittest.TestCase):
+    """The replay "Watch bot" shows must be one that finishes."""
+
+    def test_the_same_future_needs_the_whole_state(self):
+        from gd.analysis import _signature
+        from gd import triggers as T
+        b = LevelBuilder()
+        b.add(T.TOGGLE, 300, 15, k51=5, k56=0, k11=1)          # a touch trigger on the path
+        b.block(30, 11)
+        sim = Simulation(b.level())
+        base = _signature(sim)
+        sim.player.rotation += 30.0
+        self.assertNotEqual(_signature(sim), base, "the icon's angle is part of it")
+        sim.reset()
+        self.assertEqual(_signature(sim), base)
+        sim.trig.fired = sim.trig.fired | {0}
+        self.assertNotEqual(_signature(sim), base, "so is what the triggers have done")
+
+    def test_making_a_replay_neat_keeps_to_its_time_and_still_finishes(self):
+        from gd.analysis import Analyzer
+        level = built(spikes(3)).level()
+        found, seq = timing.search(level)
+        t = time.perf_counter()
+        quick = Analyzer(level, seq).centre(passes=1, budget=0.0)
+        self.assertLess(time.perf_counter() - t, 5.0)
+        sim = Simulation(level)
+        sim.run(quick)
+        self.assertTrue(sim.finished)
+
+    def test_the_search_leaves_the_end_of_the_bar_for_the_replay(self):
+        seen = []
+        timing.search(built(spikes(2)).level(), progress=lambda f, text: seen.append(f))
+        self.assertLessEqual(max(seen), timing.SEARCH_SHARE + 1e-9)
+
+
 class Files(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="gdtiming")
