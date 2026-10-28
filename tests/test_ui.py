@@ -150,10 +150,38 @@ class StartUp(unittest.TestCase):
                 show()
                 app.root.update()
             self.assertGreater(len(app.cv.find_all()), 5, "the menu drew something")
+            self.check_online_save(app)
             self.check_fps_toggle(app)
         finally:
             app.quit()
         self.assertEqual(errors, [])
+
+    def check_online_save(self, app):
+        """Save on the Online Levels screen puts a copy in My Levels, named after the level,
+        and does not make a second copy when pressed again.  (The download is faked.)"""
+        from gd import paths
+        from gd.level import LevelBuilder
+        from gd.levelio import load_level_file
+        cached = os.path.join(paths.SAVEDATA, "online", "4242.gmd")
+        os.makedirs(os.path.dirname(cached), exist_ok=True)
+        write_gmd(cached, "Saved Online", LevelBuilder().block(5, 0).string())
+        app.show_online()
+        screen = app.screen
+        screen.fetched[4242] = cached
+        screen.level_id.set("4242")
+        screen.save()
+        target = os.path.join(paths.USER_LEVELS, "Saved Online.gmd")
+        self.assertTrue(os.path.isfile(target), os.listdir(paths.USER_LEVELS))
+        self.assertEqual(load_level_file(target).name, "Saved Online")
+        self.assertIn("Saved to My Levels", screen.done)
+        screen.save()
+        self.assertIn("Already in My Levels", screen.done)
+        self.assertEqual([f for f in os.listdir(paths.USER_LEVELS) if f.startswith("Saved Online")],
+                         ["Saved Online.gmd"])
+        screen.level_id.set("not an id")
+        screen.save()
+        self.assertIn("ID", screen.error)
+        app.home()
 
     def check_fps_toggle(self, app):
         """F shows and hides the counter in a level, the pause menu has it too, and the

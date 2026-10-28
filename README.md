@@ -17,7 +17,9 @@ easy to very hard, a hitbox viewer and a test suite.
 
 **Online Levels** on the home screen (or **O**) plays any public level from Geometry
 Dash's own level server: type its **level ID** (the number on the level's page in the
-game) and press **Play** or Enter. It downloads and starts at once.
+game) and press **Play** or Enter. It downloads and starts at once. **Save** puts a copy
+in My Levels instead, named after the level, so you can play it offline, practise it or
+open it in the editor.
 
 Most levels made since 2.0 are built with triggers. The engine runs the ones that move
 the gameplay - **move**, **toggle**, **spawn**, **follow**, **stop** and **touch-triggered**

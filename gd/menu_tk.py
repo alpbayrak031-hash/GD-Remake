@@ -459,38 +459,51 @@ class MyLevels(Screen):
             self.delete(path)
 
 
+def save_to_my_levels(path):
+    """Copy a downloaded level into My Levels, named after the level -> the new file."""
+    raw = load_level_file(path)
+    os.makedirs(LEVELS, exist_ok=True)
+    target = unique_path(LEVELS, raw.name)
+    write_gmd(target, raw.name, raw.level_string)
+    _info_cache.clear()
+    return target
+
+
 class Online(Screen):
-    """Play a public level from Geometry Dash's own level server: type its ID, press Play.
-    gd/online.py does the talking, on a background thread so the window never freezes."""
+    """Play a public level from Geometry Dash's own level server, or keep a copy in My
+    Levels: type its ID, press Play or Save.  gd/online.py does the talking, on a
+    background thread so the window never freezes."""
 
     def __init__(self, app):
         Screen.__init__(self, app)
-        self.busy, self.error = "", ""
+        self.busy, self.error, self.done = "", "", ""
         self.fetched = {}                         # level id -> cached file, for this visit
+        self.saved = {}                           # level id -> its copy in My Levels
         self.level_id = tk.StringVar()
         self.entry = tk.Entry(app.cv, textvariable=self.level_id, relief="flat", bg="#0A0D15", fg=ui.TEXT,
                               insertbackground=ui.TEXT, font=ui.font(22, True), justify="center",
                               highlightthickness=1, highlightbackground=ui.LINE, highlightcolor=ui.CYAN)
         self.entry.bind("<Return>", lambda e: self.play())
         self.entry.bind("<Escape>", lambda e: app.home())
-        app.root.after_idle(self.entry.focus_set)
+        app.root.after_idle(lambda: self.entry.winfo_exists() and self.entry.focus_set())   # (may be gone already)
 
     def close(self):
         self.entry.destroy()
 
-    def play(self):
-        if self.busy:
-            return
+    def _level_id(self):
         text = self.level_id.get().strip()
         if not text.isdigit() or int(text) <= 0:
-            self.error = "Type the level's ID: the number shown on its page in Geometry Dash."
+            self.error, self.done = "Type the level's ID: the number shown on its page in Geometry Dash.", ""
             self.app.redraw()
-            return
-        level_id = int(text)
+            return None
+        return int(text)
+
+    def _then(self, level_id, action):
+        """Download the level (once per visit), then `action(path)` back on the window."""
         if level_id in self.fetched:
-            self.app.play(self.fetched[level_id])
+            action(self.fetched[level_id])
             return
-        self.busy, self.error = "Downloading level %d..." % level_id, ""
+        self.busy, self.error, self.done = "Downloading level %d..." % level_id, "", ""
         box = {}
 
         def run():
@@ -513,24 +526,51 @@ class Online(Screen):
                 self.error = box["err"]
             elif self.app.screen is self and self.app.game is None:
                 self.fetched[level_id] = box["path"]
-                self.app.play(box["path"])
-                return
+                action(box["path"])
             if self.app.screen is self and self.app.game is None:
                 self.app.redraw()
 
         self.app.root.after(100, poll)
         self.app.redraw()
 
+    def play(self):
+        level_id = None if self.busy else self._level_id()
+        if level_id is not None:
+            self._then(level_id, self.app.play)
+
+    def save(self):
+        level_id = None if self.busy else self._level_id()
+        if level_id is None:
+            return
+        if level_id in self.saved:
+            self.error, self.done = "", "Already in My Levels as \"%s\"." % os.path.basename(self.saved[level_id])[:-4]
+            self.app.redraw()
+            return
+
+        def keep(path):
+            try:
+                target = save_to_my_levels(path)
+            except (OSError, LevelFormatError) as exc:
+                self.error = "Could not save it: %s" % (getattr(exc, "strerror", None) or exc)
+                return
+            self.saved[level_id] = target
+            self.error, self.done = "", "Saved to My Levels as \"%s\"." % os.path.basename(target)[:-4]
+        self._then(level_id, keep)
+
     def draw(self, cv, w, h):
         self.header(cv, w, "Online Levels", "from the Geometry Dash level server")
         mid = h / 2.0 - 30
         cv.create_text(w / 2, mid - 58, text="Level ID", fill=ui.MUTED, font=ui.font(14))
         cv.create_window(w / 2, mid, window=self.entry, width=300, height=52)
-        ui.Button(cv, w / 2 - 80, mid + 46, 160, 50, "Play", self.play, "primary", 17, enabled=not self.busy)
-        text = self.busy or self.error
+        ui.Button(cv, w / 2 - 150, mid + 46, 145, 50, "Play", self.play, "primary", 17, "Enter",
+                  enabled=not self.busy)
+        ui.Button(cv, w / 2 + 5, mid + 46, 145, 50, "Save", self.save, "normal", 17, "to My Levels",
+                  enabled=not self.busy)
+        text = self.busy or self.error or self.done
         if text:
-            cv.create_text(w / 2, mid + 130, text=ui.fit(text, ui.font(13), w - 80), font=ui.font(13, bool(self.error)),
-                           fill=ui.YELLOW if self.error else ui.MUTED)
+            colour = ui.YELLOW if self.error else ui.GREEN if self.done else ui.MUTED
+            cv.create_text(w / 2, mid + 130, text=ui.fit(text, ui.font(13), w - 80), font=ui.font(13, not self.busy),
+                           fill=colour)
 
     def key(self, k):
         if k == "escape":
