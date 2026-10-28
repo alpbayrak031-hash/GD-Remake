@@ -176,6 +176,44 @@ class Measure(unittest.TestCase):
         self.assertEqual(timing.CHUNKS, tuple(sorted(timing.CHUNKS, reverse=True)), "coarsest first")
 
 
+class Faster(unittest.TestCase):
+    """The shortcuts that make a measurement quick must not change what it says."""
+
+    def test_a_stalled_search_gives_up_early_and_says_so(self):
+        b = LevelBuilder(mode=1)                          # a ship has many ways to fly...
+        for row in range(12):
+            b.block(40, row)                              # ...into a wall
+        sim = Simulation(b.level())
+        t = time.perf_counter()
+        self.assertIsNone(solve(sim, chunk=4, max_nodes=10 ** 7, stall=20000))
+        self.assertTrue(sim.solver_stalled)
+        self.assertLess(time.perf_counter() - t, 30.0)
+        sim2 = Simulation(b.level())
+        self.assertIsNone(solve(sim2, chunk=4, max_nodes=30000))
+        self.assertFalse(sim2.solver_stalled, "without a stall limit only the budget or a proof ends it")
+
+    def test_the_stall_limit_does_not_change_a_rating(self):
+        import os as _os
+        from gd.level import Level
+        from gd.levelio import load_level_file
+        for name in ("03_lift_off.gmd", "06_double_time.gmd"):
+            level = Level(load_level_file(_os.path.join(ROOT, "levels", name)))
+            chunks = (40, 28, 20, 14, 10, 8, 6)
+            full, _ = rate(level, chunks=chunks, max_nodes=150000)
+            quick, _ = rate(level, chunks=chunks, max_nodes=150000, stall=20000)
+            self.assertEqual(full, quick, name)
+
+    def test_progress_only_goes_up_and_says_what_it_tries(self):
+        seen = []
+        found, seq = timing.search(built(spikes(3)).level(), progress=lambda f, text: seen.append((f, text)))
+        self.assertEqual(found["state"], "ok")
+        fractions = [f for f, _ in seen]
+        self.assertEqual(fractions, sorted(fractions))
+        self.assertTrue(0.0 <= fractions[0] and fractions[-1] <= 1.0)
+        self.assertGreater(fractions[-1], 0.5)
+        self.assertTrue(any("ms grid" in text for _f, text in seen), seen[:5])
+
+
 class Files(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="gdtiming")

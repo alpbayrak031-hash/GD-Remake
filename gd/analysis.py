@@ -199,7 +199,7 @@ class Analyzer:
 
 
 def rate(level, chunks=(32, 24, 16, 12, 8, 6, 4), max_nodes=250000, info=None, check=None,
-         strict=True, allow_push=True, phases=3):
+         strict=True, allow_push=True, phases=3, stall=None, progress=None):
     """-> (chunk, InputSequence) for the coarsest input grid that solves the level on
     three different phases, or (None, None).  Bigger chunk = more forgiving level.
 
@@ -212,27 +212,50 @@ def rate(level, chunks=(32, 24, 16, 12, 8, 6, 4), max_nodes=250000, info=None, c
     be finished without one: a chain of held jumps lets the search land on a narrow window
     from a coarse grid, so the result can look more forgiving than the level is.  Asking
     for more `phases` makes such luck less likely.  allow_push: see autoplay.solve.
+
+    stall (see autoplay.solve) makes the grids that do not work give up early - most of a
+    rating is otherwise spent on them.  To keep the answer what a full search would say,
+    the grids just coarser than the one that works are tried again without it, as long as
+    they only stalled (it assumes, like the rest of this, that a coarser grid does not
+    work where a finer one was proven not to).  progress(chunk, phase, x) is called as
+    the search gets further.
     """
     global last_reach
     sim = Simulation(level)
     last_reach = 0.0
     limit_x = None
-    for chunk in chunks:
-        result = None
-        # evenly spread grid offsets (grids of only a few ticks have fewer distinct ones)
+    stalled = []                                       # coarser grids that stalled, nearest last
+
+    def attempt(chunk, stall_steps):
+        """The grid on every phase -> (first route or None, did a failure only stall?)"""
+        global last_reach
+        nonlocal limit_x
+        first = None
         for phase in sorted({(i * chunk) // phases for i in range(phases)}):
+            hook = None if progress is None else (lambda x, _n, c=chunk, ph=phase: progress(c, ph, x))
             seq = solve(sim, chunk=chunk, max_nodes=max_nodes, phase=phase, strict=strict, check=check,
-                        allow_push=allow_push)
+                        allow_push=allow_push, stall=stall_steps, progress=hook)
             last_reach = max(last_reach, sim.solver_reach)
             if seq is None:
                 limit_x = sim.solver_reach
-                result = None
+                return None, sim.solver_stalled
+            first = first or seq
+        return first, False
+
+    for chunk in chunks:
+        result, only_stalled = attempt(chunk, stall)
+        if result is None:
+            stalled = stalled + [chunk] if only_stalled else []
+            continue
+        # a stalled grid just above this one might still work with a full search
+        while stalled:
+            again, _ = attempt(stalled[-1], None)
+            if again is None:
                 break
-            result = result or seq
-        if result is not None:
-            if info is not None:
-                info["limit_x"] = limit_x
-            return chunk, result
+            chunk, result = stalled.pop(), again
+        if info is not None:
+            info["limit_x"] = limit_x
+        return chunk, result
     if info is not None:
         info["limit_x"] = limit_x
     return None, None

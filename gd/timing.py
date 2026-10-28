@@ -43,7 +43,7 @@ from .paths import SAVEDATA
 from .sim import Simulation
 
 DEFAULT_PATH = os.path.join(SAVEDATA, "timing.json")
-VERSION = 6                      # raise it when the method changes: old results are then measured again
+VERSION = 7                      # raise it when the method changes: old results are then measured again
 # input grids tried, coarsest first, in ticks of 1/240 s: 200 ms ... 4 ms (a single physics step)
 CHUNKS = (48, 40, 32, 28, 24, 20, 16, 14, 12, 10, 8, 7, 6, 5, 4, 3, 2, 1)
 MAX_NODES = 150000               # search budget per attempt
@@ -54,6 +54,15 @@ BUDGET_SECONDS = 45.0            # ... and per level, counting only time actuall
 # SHORT_LEVEL seconds and grow in proportion beyond that, up to LONGEST times as much.
 SHORT_LEVEL = 30.0
 LONGEST = 8.0
+# A grid that does not work almost always shows it the same way: the search gets stuck at
+# one spot and spends its whole budget trying every variation before it.  So a search
+# gives up after this many physics steps without getting a block further.  That alone
+# could turn a "yes" into a "no": on the pack, searches that went on to succeed sometimes
+# went up to about 410 000 steps without progress (Overclock, Zero G).  So a grid that
+# only gave up this way is searched again in full whenever the grid below it works (see
+# analysis.rate): the number shown stays what a full search finds - it only comes much
+# sooner, because the grids far from the answer are no longer searched to the end.
+STALL_STEPS = 250000
 HOLD_PHASES = 6                  # grid phases a route with held jumps must work on (see analysis.rate)
 # The level pack's difficulty bands (tools/make_level_pack.py), as milliseconds
 BANDS = ((100, "easy"), (50, "medium"), (30, "hard"), (0, "very hard"))
@@ -98,7 +107,7 @@ def scale_for(level):
     return max(1.0, min(LONGEST, level_seconds(level) / SHORT_LEVEL))
 
 
-def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None):
+def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None, progress=None):
     """-> (result, InputSequence that finishes the level or None).  The result is one of
           {"state": "ok", "ticks": n, "ms": ms, "capped": bool}   the tightest input is about `ms`;
                                                                    capped: even the coarsest grid worked;
@@ -110,7 +119,9 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None):
 
     `wait` is called regularly during the search; it may block or raise Cancelled.
     max_nodes / budget: per attempt / per level; by default the standard ones, scaled up
-    for a long level (scale_for)."""
+    for a long level (scale_for).
+    progress(fraction, text): how far into the level the bot has got (it only goes up)
+    and what it is trying, e.g. (0.64, "trying a 17 ms grid")."""
     scale = scale_for(level)
     if max_nodes is None:
         max_nodes = int(MAX_NODES * scale)
@@ -126,29 +137,50 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None):
         if spent[0] > budget:
             raise _OutOfTime()
 
+    best = [0.0]
+
+    def report(text, x):
+        if progress is not None:
+            best[0] = max(best[0], min(1.0, x / level.end_x))
+            progress(best[0], text)
+
+    def on_grid(stage):
+        def hook(chunk, _phase, x):
+            report("%s a %d ms grid" % (stage, to_ms(chunk)) if chunk > 1 else "%s every physics step" % stage, x)
+        return hook
+
+    def on_solve(text):
+        return lambda x, _nodes: report(text, x)
+
+    tries = on_grid("trying")
+    report("starting", 0.0)
     coarse = tuple(c for c in chunks if c > 1)
     try:
-        chunk, seq = rate(level, chunks=coarse, max_nodes=max_nodes, check=check) if coarse else (None, None)
+        chunk, seq = rate(level, chunks=coarse, max_nodes=max_nodes, check=check, stall=STALL_STEPS,
+                          progress=tries) if coarse else (None, None)
         if seq is None and 1 in chunks:
             # every moment the physics has: this finds a jump that works on one step only
             fine = max(max_nodes, int(MAX_NODES_FINE * scale))
-            chunk, seq = rate(level, chunks=(1,), max_nodes=fine, check=check)
+            chunk, seq = rate(level, chunks=(1,), max_nodes=fine, check=check, stall=STALL_STEPS, progress=tries)
             if seq is None:
                 # ... then with held jumps allowed.  First the one question that settles it -
                 # is there any such route, step by step? - so that an impossible level does
                 # not cost a whole second pass over every grid; only then how coarse it can be.
-                seq = solve(Simulation(level), chunk=1, max_nodes=fine, check=check, allow_push=False)
+                seq = solve(Simulation(level), chunk=1, max_nodes=fine, check=check, allow_push=False,
+                            stall=STALL_STEPS, progress=on_solve("trying held jumps"))
                 if seq is not None:
                     chunk, held = 1, seq
                     if coarse:
                         chunk, seq = rate(level, chunks=coarse, max_nodes=max_nodes, check=check, strict=False,
-                                          allow_push=False, phases=HOLD_PHASES)
+                                          allow_push=False, phases=HOLD_PHASES, stall=STALL_STEPS,
+                                          progress=on_grid("held jumps:"))
                     if seq is None:
                         chunk, seq = 1, held
                     return {"state": "ok", "ticks": chunk, "ms": to_ms(chunk), "capped": chunk == chunks[0],
                             "hold": True}, seq
                 # ... and only if that fails too, any route at all, the glitch included
-                seq = solve(Simulation(level), chunk=1, max_nodes=fine, check=check)
+                seq = solve(Simulation(level), chunk=1, max_nodes=fine, check=check, stall=STALL_STEPS,
+                            progress=on_solve("trying the glitch"))
                 if seq is not None:
                     return {"state": "glitch"}, seq
     except _OutOfTime:
@@ -255,6 +287,7 @@ class Measurer:
         self.timings = timings if timings is not None else Timings()
         self.version = 0
         self.current = None
+        self.progress = 0.0                         # how far into `current` the bot has got (0..1)
         self._queue = []
         self._lock = threading.Lock()
         self._run = threading.Event()
@@ -300,12 +333,16 @@ class Measurer:
             if self.current not in self._queue:      # no longer wanted (deleted, or another screen)
                 raise Cancelled()
 
+    def _progressed(self, fraction, _text):
+        self.progress = fraction
+
     def _work(self):
         while not self._stop:
             self._run.wait()
             with self._lock:
                 path = next((p for p in self._queue if self.timings.lookup(p) is None), None)
                 self.current = path
+                self.progress = 0.0
                 if path is None:
                     self._queue = []
                     self._thread = None
@@ -314,7 +351,7 @@ class Measurer:
             result = None
             try:
                 if digest is not None:
-                    result = measure(Level(load_level_file(path)), wait=self._wait)
+                    result = measure(Level(load_level_file(path)), wait=self._wait, progress=self._progressed)
             except Cancelled:
                 result = None
             except (LevelFormatError, OSError, ValueError):

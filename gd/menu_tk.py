@@ -406,10 +406,17 @@ class MyLevels(Screen):
                 note += "      " + os.path.basename(path)
                 cv.create_text(x0 + 78, y + 49, anchor="w", fill=ui.MUTED, font=ui.font(12),
                                text=ui.fit(note, ui.font(12), room))
-                text, band = describe(app.timing.get(path))
+                result = app.timing.get(path)
+                text, band = describe(result)
                 cv.create_text(tx, y + 22, anchor="w", fill=ui.MUTED, font=ui.font(10, True), text="TIGHTEST JUMP")
-                cv.create_text(tx, y + 46, anchor="w", text=text,
-                               fill=TIMING_COLORS.get(band, ui.MUTED), font=ui.font(17 if band else 12, bool(band)))
+                if result is None and app.timing.current == path:           # being measured right now
+                    fraction = app.timing.progress
+                    ui.bar(cv, tx, y + 40, 110, 10, fraction, ui.CYAN)
+                    cv.create_text(tx + 118, y + 45, anchor="w", text="%d%%" % int(fraction * 100), fill=ui.CYAN,
+                                   font=ui.font(11, True))
+                else:
+                    cv.create_text(tx, y + 46, anchor="w", text=text,
+                                   fill=TIMING_COLORS.get(band, ui.MUTED), font=ui.font(17 if band else 12, bool(band)))
                 for j, mode in enumerate(info["modes"][:8]):
                     icons.draw_icon(cv, mode, px + 10 + j * 30, y + 24, 8)
                 ui.bar(cv, px, y + 42, 190, 16, rec["best"] / 100.0, ui.GREEN)
@@ -861,7 +868,7 @@ class App:
         self.home_error = paths.ensure_home()         # the player's folder in Documents ("" = fine)
         self.progress = Progress()
         self.timing = Measurer()                      # works out "tightest jump" for My Levels
-        self._timing_seen = 0
+        self._timing_seen = None
         self.game = None
         self.editor = None
         self.session = None                           # the sharing room this player hosts or is in
@@ -904,8 +911,10 @@ class App:
         in_menu = self.game is None and self.editor is None
         if in_menu:
             self.timing.resume()
-            if self.timing.version != self._timing_seen:
-                self._timing_seen = self.timing.version
+            # a new result, or the one being measured got at least 2 % further
+            seen = (self.timing.version, int(self.timing.progress * 50))
+            if seen != self._timing_seen:
+                self._timing_seen = seen
                 if isinstance(self.screen, MyLevels):
                     self.redraw()
         else:

@@ -35,7 +35,7 @@ def _num(d, key, default=0.0):
 class GameObject:
     __slots__ = ("uid", "id", "kind", "arg", "x", "y", "rot", "flip_x", "flip_y", "w", "h",
                  "minx", "maxx", "miny", "maxy", "corners", "radius", "groups", "multi",
-                 "orient", "upside", "passable", "note", "stamp")
+                 "orient", "upside", "passable", "note", "stamp", "sec")
 
     def __repr__(self):
         return "<obj #%d id=%d %s at (%.1f, %.1f)>" % (self.uid, self.id, self.kind, self.x, self.y)
@@ -179,7 +179,8 @@ class Level:
             self.triggers = T.Setup(triggers, self.objects, anchors, self.deco)
             static = self.triggers.static
         for obj in static:
-            for s in range(int(obj.minx // SECTION_SIZE), int(obj.maxx // SECTION_SIZE) + 1):
+            obj.sec = int(obj.minx // SECTION_SIZE)          # the first section it is listed in
+            for s in range(obj.sec, int(obj.maxx // SECTION_SIZE) + 1):
                 self.sections.setdefault(s, []).append(obj)
         self.last_object_x = max_x
         self.end_x = max_x + LEVEL_END_PADDING
@@ -221,6 +222,7 @@ class Level:
         sx, sy = sx or 1.0, sy or 1.0
 
         o = GameObject()
+        o.sec = 0                          # set for real when the level indexes it
         o.id, o.kind, o.arg, o.note = oid, d.kind, d.arg, d.note
         o.x, o.y, o.rot = x, y, rot
         o.flip_x, o.flip_y = _num(raw, 4) != 0, _num(raw, 5) != 0
@@ -306,18 +308,23 @@ class Level:
 
     def query(self, minx, maxx, miny, maxy):
         """Objects that never move whose bounding box touches the given rect, in level-string
-        order.  Simulation.query adds the ones that triggers move."""
-        self._stamp += 1
-        stamp = self._stamp
-        out = []
+        order.  Simulation.query adds the ones that triggers move.
+
+        Called every physics step, so it is kept lean: each section's list is already in
+        level order, and an object listed in several sections is only taken from the
+        first one the rect covers (later ones skip objects that start before them)."""
         sections = self.sections
-        for s in range(int(minx // SECTION_SIZE), int(maxx // SECTION_SIZE) + 1):
-            for o in sections.get(s, ()):
-                if o.stamp != stamp:
-                    o.stamp = stamp
-                    if not (o.maxx < minx or maxx < o.minx or o.maxy < miny or maxy < o.miny):
-                        out.append(o)
-        if len(out) > 1:
+        first, last = int(minx // SECTION_SIZE), int(maxx // SECTION_SIZE)
+        out = [o for o in sections.get(first, ())
+               if not (o.maxx < minx or maxx < o.minx or o.maxy < miny or maxy < o.miny)]
+        merged = False
+        for s in range(first + 1, last + 1):
+            more = [o for o in sections.get(s, ())
+                    if o.sec == s and not (o.maxx < minx or maxx < o.minx or o.maxy < miny or maxy < o.miny)]
+            if more:
+                merged = merged or bool(out)
+                out += more
+        if merged:
             out.sort(key=_uid)
         return out
 

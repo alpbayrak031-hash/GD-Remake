@@ -1146,15 +1146,25 @@ class Editor(Painter):
         if self.busy:
             return
         self.busy = True
+        self.bot_progress = (0.0, "starting")
+        self.bot_stop = False
         self._draw_top()
         level = self.doc.to_level()
         result = {}
 
+        def wait():
+            if self.bot_stop:
+                from .timing import Cancelled
+                raise Cancelled()
+
+        def progress(fraction, text):
+            self.bot_progress = (fraction, text)          # read by poll() on the window's side
+
         def work():
             from .analysis import Analyzer
-            from .timing import describe, search
+            from .timing import Cancelled, describe, search
             try:
-                found, seq = search(level)               # the same measurement My Levels shows
+                found, seq = search(level, wait=wait, progress=progress)   # the same measurement My Levels shows
                 if seq is None:
                     result["text"] = None
                     result["why"] = found.get("reason")
@@ -1173,6 +1183,8 @@ class Editor(Painter):
                 else:
                     tight = "No input is needed."
                 result["text"] = "The bot finished it with %d press%s. %s" % (presses, "" if presses == 1 else "es", tight)
+            except Cancelled:
+                result["stopped"] = True
             except Exception as exc:                    # report instead of dying silently in a thread
                 result["error"] = "%s: %s" % (type(exc).__name__, exc)
 
@@ -1184,11 +1196,15 @@ class Editor(Painter):
             if not self.frame.winfo_exists():
                 return
             if thread.is_alive():
+                self._draw_bot_progress()
                 self.root.after(150, poll)
                 return
             self.busy = False
+            self.cv.delete("botpanel")
             self._draw_top()
-            if result.get("error"):
+            if result.get("stopped"):
+                self._say("Stopped the bot.")
+            elif result.get("error"):
                 messagebox.showerror("Bot failed", result["error"])
             elif result.get("text") is None:
                 self._say("The bot gave up.")
@@ -1205,6 +1221,29 @@ class Editor(Painter):
                     self.host.play_level(level, result["replay"], self.show_hit)
 
         self.root.after(150, poll)
+
+    def _draw_bot_progress(self):
+        """While the bot works: a panel over the level with how far it has got, what it is
+        trying, and a Stop button."""
+        cv = self.cv
+        cv.delete("botpanel")
+        fraction, text = self.bot_progress
+        w = max(cv.winfo_width(), 400)
+        x0, y0 = cv.canvasx(w - 382), cv.canvasy(14)
+        tags = ("botpanel",)
+        ui.rounded(cv, x0, y0, x0 + 366, y0 + 84, 12, fill=ui.PANEL, outline=ui.LINE, width=1, tags=tags)
+        cv.create_text(x0 + 16, y0 + 18, text="The bot is working", anchor="w", fill=ui.TEXT, font=ui.font(13, True),
+                       tags=tags)
+        cv.create_text(x0 + 274, y0 + 18, text="%d%%" % int(fraction * 100), anchor="e", fill=ui.GREEN,
+                       font=ui.font(13, True), tags=tags)
+        ui.bar(cv, x0 + 16, y0 + 34, 258, 14, fraction, ui.GREEN, tags=tags)
+        cv.create_text(x0 + 16, y0 + 64, text=ui.fit("How far it got - " + text, ui.font(11), 330), anchor="w",
+                       fill=ui.MUTED, font=ui.font(11), tags=tags)
+        ui.Button(cv, x0 + 286, y0 + 10, 66, 40, "Stop", self._stop_bot, "danger", 13, radius=8, tags=tags)
+
+    def _stop_bot(self):
+        self.bot_stop = True
+        self._say("Stopping the bot...")
 
     # ------------------------------------------------------------------ leaving
     def close(self):

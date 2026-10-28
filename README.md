@@ -349,6 +349,25 @@ The bot looks for a route in this order: ordinary taps on every grid from 200 ms
 to a single step, then held jumps, and the glitch last. So "Watch bot" only ever shows
 the glitch on a level that cannot be finished without it, and says so when it does.
 
+**How it stays quick.** Almost all of a measurement used to go into the grids that do not
+work: the search gets stuck at the level's hardest spot and tries every variation before
+it until its budget is gone. Now a search gives up after 250 000 physics steps without
+getting a block further. That alone could turn a "yes" into a "no" (a search that does
+succeed can stall for 400 000 steps first), so a grid that only gave up this way is
+searched again in full whenever the grid below it works - the number shown is what a
+full search finds, it just comes sooner. The search also remembers where it has been as
+64-bit hashes instead of whole positions and lets go of positions it can no longer
+return to, which roughly halves its memory, and looking up the objects near the player
+each step no longer sorts what it does not need to. Measured on all 13 pack levels and
+a few other levels, one level at a time: the same number on every one; Zero G in 8 s
+instead of 40 s, Bloodbath Tribute in 14 s and 64 MB instead of 51 s and 116 MB, and
+where no route is found either way, real Bloodbath in 47 s and 126 MB instead of 117 s
+and 330 MB.
+
+While the bot works, **Watch bot** in the editor shows how far into the level it has
+got and what it is trying, with a **Stop** button; on My Levels, the level being
+measured shows the same as a small bar.
+
 A **held jump** is a jump you start by already having the button down when you land: the
 jump then begins by itself on the first step you are back on the ground, a touch more
 exactly than any fresh tap can. A level that only works that way still gets a number:
@@ -424,7 +443,7 @@ always says what the current tool does.
 | **-** / **=** | zoom |
 | **H** | hitboxes on/off (on by default) |
 | **P** | play-test the level (in the same window; nothing is saved to your progress) |
-| **B** | let the bot try it; reports the measured timing and plays its run |
+| **B** | let the bot try it (a bar shows how far it has got; Stop ends it); reports the measured timing and plays its run |
 | **?** | all shortcuts |
 | Cmd/Ctrl + O / N / Z, Shift+Z | open, new, undo, redo |
 | Cmd/Ctrl + W, Cmd/Ctrl + S | close the editor, save right now |

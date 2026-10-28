@@ -48,7 +48,7 @@ def _options(sim, last, strict):
 
 
 def solve(sim, chunk=6, max_nodes=600000, progress=None, bucket_y=None, bucket_v=None,
-          prefer_release=True, phase=0, strict=False, check=None, allow_push=True):
+          prefer_release=True, phase=0, strict=False, check=None, allow_push=True, stall=None):
     """Returns an InputSequence that finishes the level, or None.
 
     prefer_release: try "button up" first at every decision, so the bot only presses
@@ -59,7 +59,12 @@ def solve(sim, chunk=6, max_nodes=600000, progress=None, bucket_y=None, bucket_v
     allow_push: False forbids only the gravity-flip grace (constants.FLIP_GRACE_PUSH) -
     held jumps stay allowed.
     check: called every few positions; it may block (to pause the search) or raise (to
-    abandon it) - that is how a search running in the background stays out of the way."""
+    abandon it) - that is how a search running in the background stays out of the way.
+    progress: called with (furthest x, positions tried) whenever the search gets a block
+    further than ever before.
+    stall: give up after this many simulation steps without getting a block further
+    (None: only max_nodes ends a search).  Afterwards sim.solver_stalled says whether that
+    is why it stopped - such a "no" is not a proof, unlike running out of positions."""
     # finer decisions need a finer notion of "the same state", or tight gaps get pruned away
     if bucket_y is None:
         bucket_y = max(0.5, chunk / 4.0)
@@ -71,26 +76,37 @@ def solve(sim, chunk=6, max_nodes=600000, progress=None, bucket_y=None, bucket_v
     sim.player.strict_taps = strict
     sim.player.no_flip_push = not allow_push
     sim.visual = False
+    sim.solver_stalled = False
     try:
         for _ in range(phase):                # shift the decision grid by `phase` ticks
             sim.step(False)
-        return _dfs(sim, chunk, max_nodes, progress, bucket_y, bucket_v, prefer_release, strict, check, angled)
+        stall_nodes = None if stall is None else max(1, int(stall // chunk))
+        return _dfs(sim, chunk, max_nodes, progress, bucket_y, bucket_v, prefer_release, strict, check, angled,
+                    stall_nodes)
     finally:
         sim.visual = True                     # a game view gets a simulation that turns the icon again
 
 
-def _dfs(sim, chunk, max_nodes, progress, bucket_y, bucket_v, prefer_release, strict, check, angled):
+PROGRESS_STEP = 30.0                          # "further": by at least a block
+_OFFSET = 1 << 40
+
+
+def _dfs(sim, chunk, max_nodes, progress, bucket_y, bucket_v, prefer_release, strict, check, angled, stall_nodes):
     def order(last):
         options = _options(sim, last, strict)
         if len(options) == 2 and not prefer_release and last:
             return (True, False)              # "the same as before" first
         return options
 
-    # each frame: [snapshot, options in the order to try them, next option index, chosen press]
-    stack = [[sim.snapshot(), order(False), 0, False]]
+    # each frame: [snapshot, options in the order to try them, next option index, chosen press, tick].
+    # The snapshot is dropped once the last option has been tried: nothing comes back to it.
+    stack = [[sim.snapshot(), order(False), 0, False, sim.tick]]
+    # what has been seen is kept as 64-bit hashes of the keys - about a seventh of the
+    # memory of the keys themselves; two different positions sharing a hash is about
+    # as likely as winning a lottery twice
     seen = set()
     nodes = 0
-    best_x = 0.0
+    best_x, progressed_at = 0.0, 0
     sim.solver_reach = 0.0                    # furthest x seen; tells you where a failed search got stuck
     while stack:
         frame = stack[-1]
@@ -102,6 +118,8 @@ def _dfs(sim, chunk, max_nodes, progress, bucket_y, bucket_v, prefer_release, st
         frame[2] += 1
         frame[3] = press
         sim.restore(frame[0])
+        if frame[2] >= len(options):
+            frame[0] = None
         for _ in range(chunk):
             sim.step(press)
             if sim.dead or sim.finished:
@@ -112,31 +130,37 @@ def _dfs(sim, chunk, max_nodes, progress, bucket_y, bucket_v, prefer_release, st
         p = sim.player
         if p.x > sim.solver_reach:
             sim.solver_reach = p.x
+            if p.x >= best_x + PROGRESS_STEP:
+                best_x, progressed_at = p.x, nodes
+                if progress:
+                    progress(p.x, nodes)
         if nodes > max_nodes:
+            return None
+        if stall_nodes is not None and nodes - progressed_at > stall_nodes:
+            sim.solver_stalled = True
             return None
         if sim.dead:
             continue
         if sim.finished:
             events, state = [], False
-            for snap, _options_, _idx, chosen in stack:
+            for _snap, _options_, _idx, chosen, tick in stack:
                 if chosen != state:
-                    events.append((snap[0], chosen))
+                    events.append((tick, chosen))
                     state = chosen
             return InputSequence(events, {"solver_nodes": nodes, "chunk": chunk})
         # states that are nearly the same are assumed to have the same fate; that is
         # what keeps the search from re-exploring every hopeless variation
         q, trig = sim.player2, sim.trig       # dual mode: the second icon is part of the state too
-        key = (sim.tick, round(p.y / bucket_y), round(p.y_vel / bucket_v), int(p.mode), p.upside_down, press,
-               p.can_jump, p.jump_unused, p.holding_jump, p.speed, p.mini, p.is_dashing,
-               round(p.rotation / 15.0) % 24 if angled else 0,
-               None if q is None else (round(q.y / bucket_y), round(q.y_vel / bucket_v), int(q.mode),
-                                       q.upside_down, q.can_jump),
-               None if trig is None else trig.fired)          # which touch/spawn triggers have gone off
+        # (every number made positive first: in CPython hash(-1) == hash(-2), which would
+        # merge positions that differ only there)
+        key = hash((sim.tick, round(p.y / bucket_y) + _OFFSET, round(p.y_vel / bucket_v) + _OFFSET, int(p.mode),
+                    p.upside_down, press, p.can_jump, p.jump_unused, p.holding_jump, p.speed, p.mini, p.is_dashing,
+                    round(p.rotation / 15.0) % 24 if angled else 0,
+                    None if q is None else (round(q.y / bucket_y) + _OFFSET, round(q.y_vel / bucket_v) + _OFFSET,
+                                            int(q.mode), q.upside_down, q.can_jump),
+                    None if trig is None else trig.fired))          # which touch/spawn triggers have gone off
         if key in seen:
             continue
         seen.add(key)
-        if progress and p.x > best_x + 300:
-            best_x = p.x
-            progress(p.x, nodes)
-        stack.append([sim.snapshot(), order(press), 0, False])
+        stack.append([sim.snapshot(), order(press), 0, False, sim.tick])
     return None
