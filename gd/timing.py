@@ -32,6 +32,8 @@ import os
 import threading
 import time
 
+from . import constants as C
+from . import objects as O
 from .analysis import rate
 from .autoplay import solve
 from .constants import TPS
@@ -41,12 +43,17 @@ from .paths import SAVEDATA
 from .sim import Simulation
 
 DEFAULT_PATH = os.path.join(SAVEDATA, "timing.json")
-VERSION = 5                      # raise it when the method changes: old results are then measured again
+VERSION = 6                      # raise it when the method changes: old results are then measured again
 # input grids tried, coarsest first, in ticks of 1/240 s: 200 ms ... 4 ms (a single physics step)
 CHUNKS = (48, 40, 32, 28, 24, 20, 16, 14, 12, 10, 8, 7, 6, 5, 4, 3, 2, 1)
 MAX_NODES = 150000               # search budget per attempt
 MAX_NODES_FINE = 400000          # ... and for the tick-by-tick attempts, whose positions are cheap but many
 BUDGET_SECONDS = 45.0            # ... and per level, counting only time actually spent searching
+# A longer level needs more: a route is a decision every few ticks all the way through, and
+# the search has to find each of them.  The budgets above are for a level of up to
+# SHORT_LEVEL seconds and grow in proportion beyond that, up to LONGEST times as much.
+SHORT_LEVEL = 30.0
+LONGEST = 8.0
 HOLD_PHASES = 6                  # grid phases a route with held jumps must work on (see analysis.rate)
 # The level pack's difficulty bands (tools/make_level_pack.py), as milliseconds
 BANDS = ((100, "easy"), (50, "medium"), (30, "hard"), (0, "very hard"))
@@ -71,7 +78,27 @@ def band(ms):
     return BANDS[-1][1]
 
 
-def search(level, wait=None, chunks=CHUNKS, max_nodes=MAX_NODES, budget=BUDGET_SECONDS):
+def level_seconds(level):
+    """About how long a level takes to play: its length at the speed of each stretch
+    between speed portals (at the start speed until the first one)."""
+    portals = sorted((o.x, o.arg) for o in level.objects if o.kind == O.PORTAL_SPEED)
+    x, speed, seconds = 0.0, level.start_speed, 0.0
+    for px, arg in portals + [(level.end_x, None)]:
+        if px > x:
+            row = C.SPEED_TABLE[speed]
+            seconds += (min(px, level.end_x) - x) / (row[0] * row[3] * C.DT * TPS)
+            x = px
+        if arg is not None:
+            speed = arg
+    return seconds
+
+
+def scale_for(level):
+    """How many times the standard budgets a level gets (see SHORT_LEVEL)."""
+    return max(1.0, min(LONGEST, level_seconds(level) / SHORT_LEVEL))
+
+
+def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None):
     """-> (result, InputSequence that finishes the level or None).  The result is one of
           {"state": "ok", "ticks": n, "ms": ms, "capped": bool}   the tightest input is about `ms`;
                                                                    capped: even the coarsest grid worked;
@@ -81,7 +108,14 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=MAX_NODES, budget=BUDGET_S
           {"state": "glitch"}                                      only finishable with the gravity-flip grace
           {"state": "unsolved", "reason": "search" | "time"}       the bot found no way through
 
-    `wait` is called regularly during the search; it may block or raise Cancelled."""
+    `wait` is called regularly during the search; it may block or raise Cancelled.
+    max_nodes / budget: per attempt / per level; by default the standard ones, scaled up
+    for a long level (scale_for)."""
+    scale = scale_for(level)
+    if max_nodes is None:
+        max_nodes = int(MAX_NODES * scale)
+    if budget is None:
+        budget = BUDGET_SECONDS * scale
     spent, mark = [0.0], [time.perf_counter()]
 
     def check():
@@ -97,9 +131,9 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=MAX_NODES, budget=BUDGET_S
         chunk, seq = rate(level, chunks=coarse, max_nodes=max_nodes, check=check) if coarse else (None, None)
         if seq is None and 1 in chunks:
             # every moment the physics has: this finds a jump that works on one step only
-            chunk, seq = rate(level, chunks=(1,), max_nodes=max(max_nodes, MAX_NODES_FINE), check=check)
+            fine = max(max_nodes, int(MAX_NODES_FINE * scale))
+            chunk, seq = rate(level, chunks=(1,), max_nodes=fine, check=check)
             if seq is None:
-                fine = max(max_nodes, MAX_NODES_FINE)
                 # ... then with held jumps allowed.  First the one question that settles it -
                 # is there any such route, step by step? - so that an impossible level does
                 # not cost a whole second pass over every grid; only then how coarse it can be.

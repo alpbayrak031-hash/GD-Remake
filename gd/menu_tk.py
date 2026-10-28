@@ -170,7 +170,7 @@ class Home(Screen):
     def draw(self, cv, w, h):
         app = self.app
         cy = h * 0.2
-        cv.create_text(w / 2, cy, text="GD REMAKE", fill=ui.TEXT, font=ui.font(56, True))
+        ui.title(cv, w / 2, cy, "GD REMAKE", 60)
         cv.create_text(w / 2, cy + 50, text="a physics recreation of Geometry Dash", fill=ui.MUTED, font=ui.font(15))
         span = 84
         for m in range(8):
@@ -191,7 +191,7 @@ class Home(Screen):
         pack = [e for e in pack_levels() if e["difficulty"] != "test"]
         t = app.progress.totals([level_key(e["path"]) for e in pack])
         everything = app.progress.totals()
-        cv.create_text(w / 2, h - 26, fill=ui.MUTED, font=ui.font(13),
+        cv.create_text(w / 2, h - 22, fill="#A9B6D6", font=ui.font(13),
                        text="%d of %d levels completed      %d attempts      %s played" % (
                            t["completed"], t["levels"], everything["attempts"], ui.format_time(everything["seconds"])))
 
@@ -460,37 +460,42 @@ class MyLevels(Screen):
 
 
 class Online(Screen):
-    """Public levels from Geometry Dash's own level server (gd/online.py does the talking):
-    the game's lists, a search, and for each level Play and Save to My Levels.  Requests
-    run on a background thread so the window never freezes."""
+    """Play a public level from Geometry Dash's own level server: type its ID, press Play.
+    gd/online.py does the talking, on a background thread so the window never freezes."""
 
     def __init__(self, app):
         Screen.__init__(self, app)
-        self.list_key, self.query, self.page = "featured", "", 0
-        self.levels, self.total = [], 0
         self.busy, self.error = "", ""
-        self.fetched = {}                         # level id -> (cached file, what the engine makes of it)
-        self.saved = {}                           # level id -> file in My Levels
-        self.search = tk.StringVar()
-        self.entry = tk.Entry(app.cv, textvariable=self.search, relief="flat", bg="#0A0D15", fg=ui.TEXT,
-                              insertbackground=ui.TEXT, font=ui.font(14), highlightthickness=1,
-                              highlightbackground=ui.LINE, highlightcolor=ui.CYAN)
-        self.entry.bind("<Return>", lambda e: self.do_search())
-        self.entry.bind("<Escape>", lambda e: app.cv.focus_set())
-        self.load()
+        self.fetched = {}                         # level id -> cached file, for this visit
+        self.level_id = tk.StringVar()
+        self.entry = tk.Entry(app.cv, textvariable=self.level_id, relief="flat", bg="#0A0D15", fg=ui.TEXT,
+                              insertbackground=ui.TEXT, font=ui.font(22, True), justify="center",
+                              highlightthickness=1, highlightbackground=ui.LINE, highlightcolor=ui.CYAN)
+        self.entry.bind("<Return>", lambda e: self.play())
+        self.entry.bind("<Escape>", lambda e: app.home())
+        app.root.after_idle(self.entry.focus_set)
 
     def close(self):
         self.entry.destroy()
 
-    # ------------------------------------------------------------------ talking to the server
-    def _run(self, label, work, done):
-        """`work` on a background thread; `done(result)` back on the window afterwards."""
-        self.busy, self.error = label, ""
+    def play(self):
+        if self.busy:
+            return
+        text = self.level_id.get().strip()
+        if not text.isdigit() or int(text) <= 0:
+            self.error = "Type the level's ID: the number shown on its page in Geometry Dash."
+            self.app.redraw()
+            return
+        level_id = int(text)
+        if level_id in self.fetched:
+            self.app.play(self.fetched[level_id])
+            return
+        self.busy, self.error = "Downloading level %d..." % level_id, ""
         box = {}
 
         def run():
             try:
-                box["ok"] = work()
+                box["path"] = online.fetch(level_id)[0]
             except online.OnlineError as exc:
                 box["err"] = str(exc)
             except Exception as exc:              # a bug or a strange reply: say so, do not crash
@@ -506,159 +511,32 @@ class Online(Screen):
             self.busy = ""
             if "err" in box:
                 self.error = box["err"]
-            else:
-                done(box["ok"])
+            elif self.app.screen is self and self.app.game is None:
+                self.fetched[level_id] = box["path"]
+                self.app.play(box["path"])
+                return
             if self.app.screen is self and self.app.game is None:
                 self.app.redraw()
 
         self.app.root.after(100, poll)
         self.app.redraw()
 
-    def load(self):
-        def got(result):
-            self.levels, self.total = result
-        self._run("Loading levels...", lambda: online.browse(self.list_key, self.page, self.query), got)
-
-    def choose(self, key):
-        self.list_key, self.query, self.page = key, "", 0
-        self.search.set("")
-        self.load()
-
-    def do_search(self):
-        query = self.search.get().strip()
-        if query and not self.busy:
-            self.query, self.page = query, 0
-            self.app.cv.focus_set()
-            self.load()
-
-    def turn(self, step):
-        if not self.busy:
-            self.page = max(0, self.page + step)
-            self.load()
-
-    def _then(self, level, action):
-        """Download the level (once) and then `action(level)`."""
-        if self.busy:
-            return
-        if level["id"] in self.fetched:
-            action(level)
-            return
-
-        def got(result):
-            self.fetched[level["id"]] = result
-            action(level)
-        self._run('Downloading "%s"...' % level["name"], lambda: online.fetch(level), got)
-
-    def play(self, level):
-        self._then(level, lambda lv: self.app.play(self.fetched[lv["id"]][0]))
-
-    def save(self, level):
-        def keep(lv):
-            path = self.fetched[lv["id"]][0]
-            try:
-                raw = load_level_file(path)
-                os.makedirs(LEVELS, exist_ok=True)
-                target = unique_path(LEVELS, raw.name)
-                write_gmd(target, raw.name, raw.level_string, creator=lv["creator"])
-                self.saved[lv["id"]] = target
-                _info_cache.clear()
-            except (OSError, LevelFormatError) as exc:
-                self.error = "Could not save it: %s" % (getattr(exc, "strerror", None) or exc)
-        self._then(level, keep)
-
-    # ------------------------------------------------------------------ drawing
     def draw(self, cv, w, h):
         self.header(cv, w, "Online Levels", "from the Geometry Dash level server")
-        x = 24
-        for key, label, _code in online.LISTS:
-            width = 24 + 8 * len(label)
-            active = key == self.list_key and not self.query
-            ui.Button(cv, x, 70, width, 34, label, lambda k=key: self.choose(k), "accent" if active else "quiet", 12,
-                      radius=8)
-            x += width + 6
-        ex = max(x + 96, w - 330)
-        cv.create_text(ex - 8, 87, anchor="e", text="Name or ID", fill=ui.MUTED, font=ui.font(12))
-        cv.create_window(ex, 87, window=self.entry, anchor="w", width=210, height=32)
-        ui.Button(cv, w - 112, 70, 88, 34, "Search", self.do_search, "accent" if self.query else "normal", 12, radius=8)
-
-        top, row_h = 118, max(44, min(54, (h - 118 - 70) / 10.0))
-        if self.query:
-            cv.create_text(24, top + 6, anchor="w", fill=ui.MUTED, font=ui.font(12),
-                           text='Search: "%s"' % self.query)
-            top += 18
-        y = top
-        for level in self.levels:
-            self._row(cv, level, 24, y, w - 24, row_h - 6)
-            y += row_h
-        if self.busy or self.error or not self.levels:
-            text = self.busy or self.error or "No levels found."
-            cv.create_text(w / 2, h - 82 if self.levels else h / 2, text=text, font=ui.font(14, bool(self.error)),
+        mid = h / 2.0 - 30
+        cv.create_text(w / 2, mid - 58, text="Level ID", fill=ui.MUTED, font=ui.font(14))
+        cv.create_window(w / 2, mid, window=self.entry, width=300, height=52)
+        ui.Button(cv, w / 2 - 80, mid + 46, 160, 50, "Play", self.play, "primary", 17, enabled=not self.busy)
+        text = self.busy or self.error
+        if text:
+            cv.create_text(w / 2, mid + 130, text=ui.fit(text, ui.font(13), w - 80), font=ui.font(13, bool(self.error)),
                            fill=ui.YELLOW if self.error else ui.MUTED)
-        pages = max(1, (self.total + 9) // 10)
-        ui.Button(cv, w / 2 - 170, h - 50, 100, 34, "Previous", lambda: self.turn(-1), "quiet", 12,
-                  enabled=self.page > 0 and not self.busy, radius=8)
-        cv.create_text(w / 2, h - 33, fill=ui.MUTED, font=ui.font(12),
-                       text="Page %d of %s" % (self.page + 1, "{:,}".format(pages)) if self.total else "")
-        ui.Button(cv, w / 2 + 70, h - 50, 100, 34, "Next", lambda: self.turn(1), "quiet", 12,
-                  enabled=self.page + 1 < pages and not self.busy, radius=8)
-        cv.create_text(24, h - 33, anchor="w", fill=ui.MUTED, font=ui.font(11),
-                       text=ui.fit("Most new levels use triggers this game does not have yet; "
-                                   "each level says what it misses once downloaded.", ui.font(11), w / 2 - 200))
-
-    @staticmethod
-    def _face(name):
-        if name.endswith("Demon"):
-            return "very hard"
-        return {"Auto": "easy", "Easy": "easy", "Normal": "easy", "Hard": "medium", "Harder": "medium",
-                "Insane": "hard"}.get(name, "custom")
-
-    def _row(self, cv, level, x0, y0, x1, height):
-        ui.rounded(cv, x0, y0, x1, y0 + height, 12, fill=ui.PANEL, outline="")
-        mid = y0 + height / 2.0
-        icons.draw_face(cv, self._face(level["difficulty"]), x0 + 26, mid, height * 0.36)
-        name_w = max(160, (x1 - x0) * 0.30)
-        cv.create_text(x0 + 52, mid - 9, anchor="w", fill=ui.TEXT, font=ui.font(15, True),
-                       text=ui.fit(level["name"], ui.font(15, True), name_w))
-        cv.create_text(x0 + 52, mid + 11, anchor="w", fill=ui.MUTED, font=ui.font(11),
-                       text=ui.fit("by %s      ID %d" % (level["creator"], level["id"]), ui.font(11), name_w))
-        sx = x0 + 64 + name_w
-        colour = icons.DIFFICULTY_COLORS.get(self._face(level["difficulty"]), ui.MUTED)
-        cv.create_text(sx, mid - 9, anchor="w", fill=colour, font=ui.font(13, True),
-                       text="%s%s" % (level["difficulty"], "   %d stars" % level["stars"] if level["stars"] else ""))
-        got = self.fetched.get(level["id"])
-        if got:
-            report = got[1]
-            note = "runs %s of %s objects" % ("{:,}".format(report["simulated"]), "{:,}".format(report["objects"]))
-            if report["missing"]:
-                note += "  -  missing: " + ", ".join(report["missing"])
-            fill = ui.YELLOW if report["missing"] else ui.GREEN
-        else:
-            note = "%s downloads    %s likes    %s    %s objects" % (
-                "{:,}".format(level["downloads"]), "{:,}".format(level["likes"]), level["length"],
-                "?" if not level["objects"] else "{:,}".format(level["objects"]) if level["objects"] < 65535
-                else "65,535+")
-            fill = ui.MUTED
-        buttons = 196
-        cv.create_text(sx, mid + 11, anchor="w", fill=fill, font=ui.font(11),
-                       text=ui.fit(note, ui.font(11), x1 - buttons - sx - 12))
-        bx = x1 - buttons
-        if level["platformer"]:
-            cv.create_text(x1 - 16, mid, anchor="e", fill=ui.MUTED, font=ui.font(12),
-                           text="platformer: not supported")
-            return
-        ui.Button(cv, bx, mid - 17, 82, 34, "Play", lambda lv=level: self.play(lv), "primary", 13,
-                  enabled=not self.busy, radius=8)
-        if level["id"] in self.saved:
-            cv.create_text(x1 - 16, mid, anchor="e", fill=ui.GREEN, font=ui.font(12, True), text="Saved")
-        else:
-            ui.Button(cv, bx + 90, mid - 17, 92, 34, "Save", lambda lv=level: self.save(lv), "normal", 13,
-                      enabled=not self.busy, radius=8)
 
     def key(self, k):
         if k == "escape":
             self.app.home()
-        elif k in ("left", "right"):
-            self.turn(-1 if k == "left" else 1)
+        elif k == "return":
+            self.play()
 
 
 class Share(Screen):
@@ -977,6 +855,7 @@ class App:
         cv.delete("all")
         cv.configure(cursor="")
         w, h = max(cv.winfo_width(), 200), max(cv.winfo_height(), 200)
+        ui.backdrop(cv, w, h, ground=isinstance(self.screen, (Home, Online)))
         self.screen.draw(cv, w, h)
 
     def _timing_tick(self):

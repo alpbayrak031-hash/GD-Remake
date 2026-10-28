@@ -21,6 +21,7 @@ PAD, ORB = "pad", "orb"
 PORTAL_MODE, PORTAL_GRAVITY, PORTAL_SIZE, PORTAL_SPEED = (
     "portal_mode", "portal_gravity", "portal_size", "portal_speed")
 PORTAL_DUAL = "portal_dual"
+PORTAL_TELEPORT = "portal_teleport"
 NOOP = "noop"
 
 OBJECTS = {}
@@ -160,6 +161,8 @@ _add(PORTAL_SPEED, 65, 56, (203,), 3)
 _add(PORTAL_SPEED, 69, 56, (1334,), 4)
 _add(PORTAL_DUAL, 34, 86, (286,), True, "ASSUMED hitbox (same as mode portals); dual mode is an ESTIMATE")
 _add(PORTAL_DUAL, 34, 86, (287,), False, "ASSUMED hitbox (same as mode portals); dual mode is an ESTIMATE")
+_add(PORTAL_TELEPORT, 25, 75, (747,), None,
+     "ASSUMED hitbox (same as gravity portals); where it puts the player is an ESTIMATE")
 _add(NOOP, 0, 0, (45, 46), None, "mirror portal: visual only")
 
 # Known gameplay-relevant IDs that are deliberately NOT simulated.  Listing them
@@ -167,9 +170,9 @@ _add(NOOP, 0, 0, (45, 46), None, "mirror portal: visual only")
 UNSUPPORTED_NAMES = {
     29: "background colour trigger", 30: "ground colour trigger", 31: "start position",
     32: "enable trail", 33: "disable trail", 142: "secret coin",
-    747: "teleport portal", 749: "teleport portal exit",
-    899: "colour trigger", 901: "move trigger", 914: "text", 1006: "pulse trigger",
-    1007: "alpha trigger", 1049: "toggle trigger", 1268: "spawn trigger",
+    749: "teleport portal exit",
+    899: "colour trigger", 914: "text", 1006: "pulse trigger",
+    1007: "alpha trigger",
     1329: "user coin", 1346: "rotate trigger", 1347: "follow trigger",
     1520: "shake trigger", 1585: "animate trigger", 1594: "toggle orb",
     1595: "touch trigger", 1611: "count trigger", 1612: "hide player trigger",

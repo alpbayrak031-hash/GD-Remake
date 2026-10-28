@@ -20,14 +20,16 @@ PlayerObject::m_yVelocity).  One native unit moves the player 0.9 * 0.25 = 0.225
 units per 240 Hz step, i.e. 54 units/second - multiply by VEL_TO_UNITS_PER_SEC
 for a human-readable number.
 """
-import struct
+import array
 
-_F = struct.Struct("f")
+_F = array.array("f", [0.0])
 
 
-def f32(x: float) -> float:
-    """Round a Python float to the nearest IEEE-754 single, like a C `float`."""
-    return _F.unpack(_F.pack(x))[0]
+def f32(x: float, _box=_F) -> float:
+    """Round a Python float to the nearest IEEE-754 single, like a C `float` (storing it in
+    a C float array does exactly that conversion, a little faster than struct)."""
+    _box[0] = x
+    return _box[0]
 
 
 # --------------------------------------------------------------------------- time

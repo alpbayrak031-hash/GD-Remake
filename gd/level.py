@@ -8,10 +8,14 @@ Object keys used (Wyliemaster/gddocs "level string"):
 Header keys (gddocs "level start"):
   kA2 game mode, kA3 mini, kA4 speed, kA8 dual, kA11 flipped gravity,
   kA22 platformer, kA32 fix gravity bug, kA34 fix robot jump, kA39 fix radius collision.
+  Colours (only drawn, never simulated): kS38 the colour channels ("1_r_2_g_3_b_..._6_id|...",
+  gddocs "color string"; channel 1000 is the background, 1001 the ground), or before 2.0
+  kS29 / kS30 (one such entry each), or before 1.9 kS1-kS3 / kS4-kS6 (red, green, blue).
 """
 from collections import Counter
 
 from . import objects as O
+from . import triggers as T
 from .constants import LEVEL_END_PADDING, MAX_Y, SECTION_SIZE
 from .geometry import obb_corners
 from .levelio import RawLevel, split_level_string
@@ -87,8 +91,10 @@ class Level:
         self.header, raw_objects = split_level_string(level_string)
         self.report = ImportReport()
         self.objects = []
-        self.sections = {}             # section index -> list[GameObject]
+        self.sections = {}             # section index -> list[GameObject] that never move
         self._stamp = 0
+        self.triggers = None           # triggers.Setup, if the level has any (gd/triggers.py)
+        self.colours = _colours(self.header)   # colour channel -> (r, g, b); 1000 background, 1001 ground
 
         h = self.header
         self.start_mode = int(_num(h, "kA2")) if 0 <= int(_num(h, "kA2")) <= 7 else 0
@@ -106,10 +112,20 @@ class Level:
             self.report.warnings.append("level starts with reversed gameplay: not simulated")
 
         max_x, max_y = 0.0, 0.0
+        triggers = []
         for raw in raw_objects:
             self.report.total += 1
             x, y = _num(raw, 2), _num(raw, 3)
             max_x, max_y = max(max_x, x), max(max_y, y)
+            if _num(raw, 1) in T.TRIGGER_IDS:
+                t = T.parse(raw, int(_num(raw, 1)), x, y, _groups(raw), _num)
+                if t is not None:
+                    t.uid = len(triggers)
+                    triggers.append(t)
+                    self.report.by_kind["%s trigger" % T.NAMES[t.id]] += 1
+                else:
+                    self.report.ignored["trigger with no target group"] += 1
+                continue
             obj = self._build(raw, x, y)
             if obj is not None:
                 obj.uid = len(self.objects)
@@ -118,8 +134,21 @@ class Level:
                 self.report.by_kind[obj.kind] += 1
                 if obj.note:
                     self.report.assumed[obj.note] += 1
-                for s in range(int(obj.minx // SECTION_SIZE), int(obj.maxx // SECTION_SIZE) + 1):
-                    self.sections.setdefault(s, []).append(obj)
+        static = self.objects
+        if triggers:
+            wanted = {t.target for t in triggers if t.id == T.TELEPORT}
+            anchors = {}
+            if wanted:
+                for raw in raw_objects:
+                    groups = _groups(raw)
+                    for g in groups:
+                        if g in wanted and g not in anchors:
+                            anchors[g] = (_num(raw, 2), _num(raw, 3), groups)
+            self.triggers = T.Setup(triggers, self.objects, anchors)
+            static = self.triggers.static
+        for obj in static:
+            for s in range(int(obj.minx // SECTION_SIZE), int(obj.maxx // SECTION_SIZE) + 1):
+                self.sections.setdefault(s, []).append(obj)
         self.last_object_x = max_x
         self.end_x = max_x + LEVEL_END_PADDING
         # gd-sim kills above y = 1476.3.  2.2 levels can be taller ("dynamic level
@@ -155,7 +184,7 @@ class Level:
         o.id, o.kind, o.arg, o.note = oid, d.kind, d.arg, d.note
         o.x, o.y, o.rot = x, y, rot
         o.flip_x, o.flip_y = _num(raw, 4) != 0, _num(raw, 5) != 0
-        o.groups = tuple(int(g) for g in str(raw.get(57, "")).split(".") if g.isdigit())
+        o.groups = _groups(raw)
         o.multi = _num(raw, 99) != 0
         o.passable = _num(raw, 134) != 0
         o.corners, o.radius, o.orient, o.upside = None, 0.0, 0, False
@@ -173,6 +202,8 @@ class Level:
             # gd-sim Slope.cpp: flips shift the orientation by 1 (x), 3 (y) or 2 (both)
             shift = 2 if (o.flip_x and o.flip_y) else 1 if o.flip_x else 3 if o.flip_y else 0
             o.orient = (turns + shift) % 4
+        elif d.kind == O.PORTAL_TELEPORT:
+            o.arg = _num(raw, 54)              # where the exit portal is: this far above (gddocs key 54)
         elif d.kind in (O.PAD, O.ORB):
             # a pad points "down" when turned past 90 degrees or flipped vertically (gd-sim Pad.cpp)
             ang = (rot + (180.0 if o.flip_y else 0.0)) % 360.0
@@ -196,8 +227,13 @@ class Level:
         return o
 
     # ------------------------------------------------------------------ queries
+    def next_stamp(self):
+        self._stamp += 1
+        return self._stamp
+
     def query(self, minx, maxx, miny, maxy):
-        """Objects whose bounding box touches the given rect, in level-string order."""
+        """Objects that never move whose bounding box touches the given rect, in level-string
+        order.  Simulation.query adds the ones that triggers move."""
         self._stamp += 1
         stamp = self._stamp
         out = []
@@ -215,6 +251,40 @@ class Level:
 
 def _uid(o):
     return o.uid
+
+
+def _channel(entry):
+    """"1_r_2_g_3_b_6_id..." -> (id, (r, g, b))"""
+    parts = entry.split("_")
+    d = dict(zip(parts[0::2], parts[1::2]))
+    try:
+        rgb = tuple(max(0, min(255, int(float(d[k])))) for k in ("1", "2", "3"))
+        return int(float(d.get("6", 0))), rgb
+    except (KeyError, ValueError):
+        return None, None
+
+
+def _colours(h):
+    out = {}
+    if h.get("kS38"):
+        for entry in str(h["kS38"]).split("|"):
+            channel, rgb = _channel(entry)
+            if channel:
+                out[channel] = rgb
+        return out
+    for key, channel in (("kS29", 1000), ("kS30", 1001)):
+        if h.get(key):
+            rgb = _channel(str(h[key]))[1]
+            if rgb:
+                out[channel] = rgb
+    for keys, channel in ((("kS1", "kS2", "kS3"), 1000), (("kS4", "kS5", "kS6"), 1001)):
+        if channel not in out and all(k in h for k in keys):
+            out[channel] = tuple(max(0, min(255, int(_num(h, k)))) for k in keys)
+    return out
+
+
+def _groups(raw):
+    return tuple(int(g) for g in str(raw.get(57, "")).split(".") if g.isdigit())
 
 
 # ---------------------------------------------------------------------- authoring

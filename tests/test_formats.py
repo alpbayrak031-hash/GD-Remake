@@ -89,12 +89,12 @@ class LevelString(Base):
         self.assertEqual((e.w, e.h), (18.0, 6.0))
 
     def test_unknown_ids_are_skipped_and_reported(self):
-        lv = Level("kA2,0;1,1,2,15,3,15;1,901,2,0,3,0;1,901,2,5,3,0;1,99999,2,0,3,0;1,45,2,0,3,0;")
+        lv = Level("kA2,0;1,1,2,15,3,15;1,1346,2,0,3,0;1,1346,2,5,3,0;1,99999,2,0,3,0;1,45,2,0,3,0;")
         self.assertEqual(len(lv.objects), 1)
         self.assertEqual(lv.report.total, 5)
-        self.assertEqual(dict(lv.report.skipped), {901: 2, 99999: 1})
+        self.assertEqual(dict(lv.report.skipped), {1346: 2, 99999: 1})
         text = lv.report.summary()
-        self.assertIn("901 (move trigger) x2", text)
+        self.assertIn("1346 (rotate trigger) x2", text)
         self.assertIn("99999 x1", text)
         self.assertIn("mirror portal", text)
 

@@ -66,6 +66,49 @@ def rounded(cv, x0, y0, x1, y1, r=10, **kw):
     return cv.create_polygon(*rounded_points(x0, y0, x1, y1, r), **kw)
 
 
+def mix(a, b, t):
+    """Colour `t` of the way from hex colour a to hex colour b."""
+    t = max(0.0, min(1.0, t))
+    return "#%02x%02x%02x" % tuple(
+        int(round(int(a[i:i + 2], 16) + (int(b[i:i + 2], 16) - int(a[i:i + 2], 16)) * t)) for i in (1, 3, 5))
+
+
+SKY_TOP, SKY_BOTTOM = "#0A0E19", "#16203A"
+
+
+def backdrop(cv, w, h, ground=True):
+    """The menu's background: a sky that lightens towards a glowing ground line, with a
+    few large faint squares drifting in it, the way GD's menus look."""
+    bands = 12
+    for i in range(bands):
+        y0, y1 = h * i / bands, h * (i + 1) / bands + 1
+        cv.create_rectangle(0, y0, w, y1, fill=mix(SKY_TOP, SKY_BOTTOM, i / (bands - 1.0)), outline="",
+                            tags="backdrop")
+    for x, y, size, t in ((0.08, 0.30, 150, 0.05), (0.84, 0.18, 210, 0.04), (0.70, 0.62, 120, 0.05),
+                          (0.22, 0.70, 90, 0.04), (0.50, 0.10, 70, 0.035), (0.95, 0.75, 160, 0.03)):
+        cx, cy = w * x, h * y
+        fill = mix(mix(SKY_TOP, SKY_BOTTOM, y), "#FFFFFF", t)
+        cv.create_rectangle(cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2, fill=fill,
+                            outline=mix(fill, "#FFFFFF", t * 1.6), width=2, tags="backdrop")
+    if ground:
+        top = h - 46
+        cv.create_rectangle(0, top, w, h, fill="#0B1222", outline="", tags="backdrop")
+        for i in range(0, int(w) + 90, 90):                       # ground tiles
+            cv.create_line(i, top + 1, i - 30, h, fill="#111B33", width=2, tags="backdrop")
+        cv.create_line(0, top, w, top, fill=mix("#35D6FF", SKY_BOTTOM, 0.55), width=5, tags="backdrop")
+        cv.create_line(0, top, w, top, fill="#BFEFFF", width=2, tags="backdrop")
+
+
+def title(cv, x, y, text, size, colour=TEXT, shadow="#05070D"):
+    """Big text with a hard drop shadow and a dark outline, so it stands off the backdrop."""
+    f = font(size, True)
+    d = max(2, size // 14)
+    cv.create_text(x + d, y + d * 1.5, text=text, fill=shadow, font=f)
+    for ox, oy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+        cv.create_text(x + ox, y + oy, text=text, fill=shadow, font=f)
+    return cv.create_text(x, y, text=text, fill=colour, font=f)
+
+
 def bar(cv, x, y, w, h, fraction, colour, track="#0A0D15", tags=()):
     """Progress bar.  Returns the item ids of (track, fill)."""
     fraction = max(0.0, min(1.0, fraction))
@@ -95,7 +138,9 @@ class Button:
             fill, fg = "#141A29", "#4A5268"
             self.fill = fill
         all_tags = (self.tag,) + tuple(tags)
-        self.rect = rounded(cv, x, y, x + w, y + h, radius, fill=fill, outline="", tags=all_tags)
+        rounded(cv, x, y + 3, x + w, y + h + 3, radius, fill=mix(fill, "#000000", 0.45), outline="", tags=all_tags)
+        self.rect = rounded(cv, x, y, x + w, y + h, radius, fill=fill, outline=mix(fill, "#FFFFFF", 0.12),
+                            tags=all_tags)
         label_x = x + w / 2.0
         if icon is not None:
             icon(cv, x + h / 2.0 + 4, y + h / 2.0, all_tags)

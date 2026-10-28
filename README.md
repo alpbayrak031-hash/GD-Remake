@@ -15,25 +15,45 @@ easy to very hard, a hitbox viewer and a test suite.
 
 ## Online Levels
 
-**Online Levels** on the home screen (or **O**) browses the public levels on Geometry
-Dash's own level server - the game's lists (Featured, Trending, Most downloaded, Most
-liked, Recent, Rated) and a search by name or level ID. Each level shows its creator,
-difficulty, stars, downloads, likes and length; **Play** downloads it and starts it,
-**Save** puts a copy in My Levels (credited to its creator).
+**Online Levels** on the home screen (or **O**) plays any public level from Geometry
+Dash's own level server: type its **level ID** (the number on the level's page in the
+game) and press **Play** or Enter. It downloads and starts at once.
 
-Most levels made since 2.0 use things this engine does not have yet - move, alpha,
-toggle and spawn triggers above all - so many will not play as intended. Once a level is
-downloaded its row says how many of its objects the engine runs and what it is missing
-("runs 10,245 of 24,746 objects - missing: fading objects (alpha triggers)").
-Platformer levels are marked and cannot be played.
+Most levels made since 2.0 are built with triggers. The engine runs the ones that move
+the gameplay: **move**, **toggle**, **spawn** and **touch-triggered** triggers, **teleport
+portals** and the 2.2 **teleport trigger** (see "Triggers" below). It does not run
+rotate, follow, alpha, camera, count or collision triggers, or the 2.2 area triggers,
+and it draws only the objects that have physics, not a level's decoration - so a level
+that leans on those will look bare or play differently. Platformer levels play as
+classic levels.
 
-How it talks to the server: the same two requests the game makes ("a page of levels",
-"this level"), over HTTPS, made by macOS's own `curl` (it brings the system's
-certificates, so the app needs no TLS library of its own; other systems use Python's).
-No account, nothing uploaded. The `secret` value in the request is the fixed one every
-Geometry Dash client sends - not a password. Downloads are cached in
-`Documents/GD Remake/savedata/online/`. Everything that comes back is treated as
-untrusted text and only ever goes through this program's level parser.
+How it talks to the server: the same request the game makes ("this level"), over HTTPS,
+made by macOS's own `curl` (it brings the system's certificates, so the app needs no TLS
+library of its own; other systems use Python's). No account, nothing uploaded. The
+`secret` value in the request is the fixed one every Geometry Dash client sends - not a
+password. Downloads are cached in `Documents/GD Remake/savedata/online/`. Everything
+that comes back is treated as untrusted text and only ever goes through this program's
+level parser.
+
+## Triggers
+
+Levels from 1.9 on build their gameplay out of groups of objects that triggers move,
+switch off and on, or set off later ([gd/triggers.py](gd/triggers.py)):
+
+| Trigger | What it does here |
+|---|---|
+| move (901) | moves its target group by its offset over its duration, along its easing curve (all 18 of GD's, from cocos2d), or with the player (lock to player X / Y) |
+| toggle (1049) | switches its target group off (not solid, not drawn) or back on |
+| spawn (1268) | after its delay, fires every trigger in its target group |
+| teleport (3022, 2.2) | puts the player on the first object of its target group |
+| teleport portal (747) | puts the player at its exit portal (drawn as an orange ring above or below it) |
+
+A trigger fires when the player passes it, or - with **Touch Triggered** - when the player
+touches it, or - with **Spawn Triggered** - only when a spawn trigger fires its group;
+**Multi Trigger** lets it fire again. Moving blocks kill or carry on as blocks do, and the
+bot can find routes through levels that use any of this (the triggers' state is part of
+every snapshot it takes). Which details are estimates is listed under "Known
+inaccuracies and gaps".
 
 ## Sharing levels on Wi-Fi
 
@@ -191,6 +211,11 @@ on the menu:
   Each row also shows the level's **tightest jump** in milliseconds - see below.
 - **Progress** - totals (levels completed, attempts, jumps, time played) and a row per level.
 
+The game draws only the part of the level around the camera (in 600-unit chunks, added
+and dropped as it scrolls), so a level of 20,000+ objects plays as smoothly as a small
+one, and it runs up to 240 frames a second - one per physics step, so a press is never
+more than a step late; more would only use up the battery.
+
 In a level:
 
 | Key | Action |
@@ -293,7 +318,7 @@ players call frame perfect. Other readings:
 | `200+ ms` | even the coarsest grid works: nothing tighter than a single spike |
 | `no input needed` | the level finishes without touching the button |
 | `glitch route only` | no normal route exists; the only way through uses the push onto a block after a gravity switch (see "Surprising but intended" below) |
-| `no way through found` | the bot could not finish it even trying every single physics step, with held jumps and the glitch allowed - impossible as built, or beyond its search budget (150 000 positions per attempt, 400 000 for the step-by-step ones, 45 s per level) |
+| `no way through found` | the bot could not finish it even trying every single physics step, with held jumps and the glitch allowed - impossible as built, or beyond its search budget (150 000 positions per attempt, 400 000 for the step-by-step ones, 45 s per level - for a level up to 30 s long; a longer level gets more in proportion, up to 8 times as much) |
 
 The bot looks for a route in this order: ordinary taps on every grid from 200 ms down
 to a single step, then held jumps, and the glitch last. So "Watch bot" only ever shows
@@ -456,13 +481,14 @@ gd/paths.py          where things live: the program, and the player's folder in 
 gd/progress.py       saved progress (savedata/progress.json)
 gd/editor_model.py   editor document: objects, snapping, undo, save/load (no GUI)
 gd/editor_tk.py      the editor screen
-gd/autoplay.py       brute-force solver (depth-first, snapshot/restore)
+gd/autoplay.py       the bot: depth-first search over button decisions (snapshot/restore)
+gd/triggers.py       move, toggle, spawn and teleport triggers: groups that move or switch off
 gd/analysis.py       difficulty rating and timing-window analysis
 gd/timing.py         "tightest jump" for My Levels: measurement, cache, background worker
 gd/fps.py            the FPS counter's numbers (FPS, 1% low, 1% high)
 gd/settings.py       small preferences kept between sessions (savedata/settings.json)
 gd/share.py          sharing levels on the local network: rooms, the code, checks, discovery (no window code)
-gd/online.py         browsing and downloading public levels from the Geometry Dash server (no window code)
+gd/online.py         downloading public levels from the Geometry Dash server by ID (no window code)
 tools/make_test_level.py   builds levels/test_level.gmd (+ .gdr2 / .json replay)
 tools/make_level_pack.py   builds and rates the 13-level pack
 tools/canvas_svg.py        dumps a Tk canvas to SVG (used to look at screens while building them)
@@ -612,6 +638,16 @@ and another simulator. Treat "frame-accurate" as a goal, not a claim.
 - A few 2.x objects use an assumed hitbox (same as their 1.x sibling): robot, spider and
   swing portals, gravity-toggle portal, dual portals, red and spider pads, dash and
   spider orbs. The import report says how many such objects a level has.
+- **Triggers are an estimate** - none of the trigger code is in a decompilation I could
+  read. The level-string keys are from gddocs; the move offsets are in game units (30 per
+  block - SPWN's standard library writes "units * 3"); the easing curves are cocos2d-x's.
+  When a trigger fires, the order of what happens within one step, the box a
+  touch-triggered trigger is touched with (30 x 30), moving blocks not carrying the player
+  along, lock-to-player following the player's own movement, a negative duration counting
+  as zero, and where a teleport puts the player (the exit portal's centre, keeping its
+  speed; the first object of the target group for the 2.2 trigger) are my estimates.
+  Runaway spawn loops are cut off (a group spawned twice in one step fires once, at most
+  4096 waiting spawns and 4096 running moves) - a safety valve, not GD behaviour.
 - **Dual mode is an estimate.** No decompilation I could find covers it, so it is built
   from how the game plays: the dual portal (286) adds a second icon at the same spot with
   the opposite gravity, the play area gets a floor and a ceiling like a flying mode's
@@ -622,10 +658,10 @@ and another simulator. Treat "frame-accurate" as a goal, not a claim.
 
 **Not implemented**
 
-- Triggers of every kind (move, rotate, toggle, spawn, alpha...). Moving objects stay
-  put and toggled-off objects stay solid. Groups are parsed but unused.
+- Triggers other than move, toggle, spawn and teleport (rotate, follow, alpha, stop,
+  pulse, colour, camera, count, collision, item, random, 2.2 area and keyframe...).
 - Two-player mode (dual with a separate button per icon), platformer mode, reverse gameplay, time warp, gravity and force
-  triggers/blocks, teleport portals and orbs, toggle/custom orbs, D/J/S/H/F blocks,
+  triggers/blocks, teleport orbs, toggle/custom orbs, D/J/S/H/F blocks,
   coins and collectibles, checkpoints, start positions (ignored).
 - **Object coverage.** Only IDs with a known hitbox are simulated: the blocks, spikes,
   saws, slopes, pads, orbs and portals in `gd/objects.py` (mostly 1.0-1.9 objects).
@@ -640,8 +676,10 @@ and another simulator. Treat "frame-accurate" as a goal, not a claim.
   Kinds: `solid`, `breakable`, `hazard`, `saw` (`arg` = radius), `slope`, `slope_hazard`.
 - Object keys 99 (multi-activate), 121 (No Touch) and 134 (Passable) are from memory.
   When both `32` and `128/129` scale keys are present, `128/129` win.
-- The viewer is a debug view: flat shapes, no textures. Portals are drawn in GD's colours
-  as glowing rings (speed portals as chevrons), not with the game's sprites.
+- The viewer draws shapes, not the game's sprites: blocks and spikes in a GD-like style,
+  portals in GD's colours as glowing rings (speed portals as chevrons), decoration not
+  at all. A downloaded level's own background and ground colours are used, darkened so
+  the shapes stay readable.
 
 ## Licence note
 

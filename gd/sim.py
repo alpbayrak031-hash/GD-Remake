@@ -32,6 +32,7 @@ from .constants import f32
 from .geometry import (circle_hits_player_fixed, circle_hits_rect_legacy,
                        obb_overlaps_obb, obb_overlaps_rect, rects_touch)
 from .player import BALL, CUBE, ROBOT, SPIDER, WAVE, FLYING, Mode, Player
+from .triggers import Run
 
 _BOUNDS = {Mode.SHIP: C.BOUNDS_SHIP, Mode.UFO: C.BOUNDS_SHIP, Mode.WAVE: C.BOUNDS_SHIP,
            Mode.SWING: C.BOUNDS_SWING, Mode.BALL: C.BOUNDS_BALL, Mode.SPIDER: C.BOUNDS_SPIDER}
@@ -46,12 +47,19 @@ def _pos(v):
     return f32(v) if C.FLOAT32_POSITIONS else v
 
 
+def _uid(o):
+    return o.uid
+
+
 class Simulation:
     def __init__(self, level):
         self.level = level
+        self.visual = True                # False (the bot): skip the icon's angle where it changes nothing
+        self._angled = any(o.corners is not None for o in level.objects)
         slopes = [o for o in level.objects if o.kind in _SLOPES]
         # OSGD collisionCheckObjects tests slopes against a rect twice their size
         self._margin = max([max(o.w, o.h) / 2.0 for o in slopes] + [2.0])
+        self.trig = Run(self, level.triggers) if level.triggers is not None else None   # gd/triggers.py
         self.reset()
 
     # ------------------------------------------------------------------ lifecycle
@@ -78,19 +86,43 @@ class Simulation:
         p.y = p.last_y = p.rot_y = 15.0
         self.floor = 0.0
         self.ceiling = _BOUNDS.get(p.mode)
+        if self.trig is not None:
+            self.trig.reset()
 
     def snapshot(self):
         return (self.tick, self.button, self.finished, set(self.destroyed), self.floor,
                 self.ceiling, self.player.copy(), len(self.log),
-                self.player2.copy() if self.player2 is not None else None)
+                self.player2.copy() if self.player2 is not None else None,
+                self.trig.snapshot() if self.trig is not None else None)
 
     def restore(self, snap):
         (self.tick, self.button, self.finished, destroyed, self.floor, self.ceiling,
-         player, log_len, player2) = snap
+         player, log_len, player2, trig) = snap
         self.destroyed = set(destroyed)
         self.player = player.copy()
         self.player2 = player2.copy() if player2 is not None else None
         del self.log[log_len:]
+        if trig is not None:
+            self.trig.restore(trig)
+
+    def query(self, minx, maxx, miny, maxy):
+        """The objects whose box touches the rect, where they are now (triggers move some)."""
+        out = self.level.query(minx, maxx, miny, maxy)
+        if self.trig is not None:
+            n = len(out)
+            self.trig.query(minx, maxx, miny, maxy, out)
+            if len(out) > n:
+                out.sort(key=_uid)
+        return out
+
+    def teleport(self, p, x, y):
+        """ESTIMATE (see gd/triggers.py): the player is put at (x, y) and keeps its speed.  A
+        mode with a floor and ceiling gets them again around the new spot."""
+        p.x = p.last_x = _pos(x)
+        p.y = p.last_y = _pos(y)
+        if self.ceiling is not None:
+            self._bounds_around(p.y, p.mode)
+        self._note("teleport")
 
     @property
     def dead(self):
@@ -120,12 +152,15 @@ class Simulation:
             q.update(C.DT)
             self._collide(q)
             if not q.dead:
-                q.update_rotation(C.DT)
+                if self.visual or self._angled:      # the angle only matters next to angled objects
+                    q.update_rotation(C.DT)
             elif q is not p:                     # losing either icon ends the attempt
                 p.die("the second icon: %s" % q.death_cause)
                 break
             if p.dead:
                 break
+        if self.trig is not None and not p.dead:
+            self.trig.step(p)
         self.tick += 1
         if not p.dead and p.x >= self.level.end_x:
             self.finished = True
@@ -175,7 +210,7 @@ class Simulation:
             other = self.player2
             self.player2 = None
             if p is other:                             # the second icon reached it first: the first goes on
-                self.player.used.add(o.uid)
+                self.player.used = self.player.used | {o.uid}
             self._bounds_around(o.y, self.player.mode)
             self._note("dual mode off")
 
@@ -203,7 +238,7 @@ class Simulation:
         hw, hh = p.half_w, p.half_h
         solids, hazards = [], []
         self._launch = None
-        for o in self.level.query(p.x - hw - m, p.x + hw + m, p.y - hh - m, p.y + hh + m):
+        for o in self.query(p.x - hw - m, p.x + hw + m, p.y - hh - m, p.y + hh + m):
             kind = o.kind
             if kind in _SOLIDS:
                 if o.uid not in self.destroyed:
@@ -310,34 +345,38 @@ class Simulation:
         elif kind == O.PAD:
             if o.arg == "blue":
                 if p.gravity_bump(o):
-                    p.used.add(o.uid)
+                    p.used = p.used | {o.uid}
                     self._note("blue pad")
             else:
-                p.used.add(o.uid)
+                p.used = p.used | {o.uid}
                 p.bump(o)
                 self._note("%s pad" % o.arg)
         elif kind == O.PORTAL_GRAVITY:
-            p.used.add(o.uid)
+            p.used = p.used | {o.uid}
             target = {"normal": False, "flipped": True}.get(o.arg, not p.upside_down)
             if p.flip_gravity(target):
                 self._note("gravity %s" % ("flipped" if target else "normal"))
         elif kind == O.PORTAL_MODE:
-            p.used.add(o.uid)
+            p.used = p.used | {o.uid}
             mode = Mode(o.arg)
             if p.set_mode(mode):
                 self._note("mode -> %s" % mode.name.lower())
             # gd-sim VehiclePortal.cpp: the play area is re-centred on every mode portal
             self._bounds_around(o.y, mode)
         elif kind == O.PORTAL_DUAL:
-            p.used.add(o.uid)
+            p.used = p.used | {o.uid}
             self._dual(p, o)
+        elif kind == O.PORTAL_TELEPORT:
+            # ESTIMATE: straight to the exit portal (gddocs key 54: its offset above this one)
+            p.used = p.used | {o.uid}
+            self.teleport(p, p.x, o.y + o.arg)
         elif kind == O.PORTAL_SIZE:
-            p.used.add(o.uid)
+            p.used = p.used | {o.uid}
             if p.mini != o.arg:
                 p.set_mini(o.arg)
                 self._note("size -> %s" % ("mini" if o.arg else "normal"))
         elif kind == O.PORTAL_SPEED:
-            p.used.add(o.uid)
+            p.used = p.used | {o.uid}
             if p.speed != o.arg:
                 p.update_time_mod(o.arg)
                 self._note("speed -> %s" % C.SPEED_NAMES[o.arg])
@@ -581,7 +620,7 @@ class Simulation:
         edge = p.y + direction * hh
         far = self.level.max_y if direction > 0 else -30.0
         best, best_obj = None, None
-        for o in self.level.query(p.x - hw + 1.0, p.x + hw - 1.0, min(edge, far), max(edge, far)):
+        for o in self.query(p.x - hw + 1.0, p.x + hw - 1.0, min(edge, far), max(edge, far)):
             if o.kind in _SOLIDS:
                 if o.uid in self.destroyed:
                     continue

@@ -164,6 +164,7 @@ def where():
         return 1
     # everything the game imports while running, plus what the importers and the bot need
     for name in ("gd.menu_tk", "gd.editor_tk", "gd.timing", "gd.share", "gd.online", "gd.fps", "gd.settings",
+                 "gd.triggers", "array", "bisect",
                  "http.client", "urllib.parse", "gd.macros", "gd.levelio", "hashlib", "zipfile",
                  "socket", "ipaddress", "secrets", "tkinter.simpledialog",
                  "gzip", "zlib", "json", "csv", "threading", "subprocess", "tkinter.filedialog",

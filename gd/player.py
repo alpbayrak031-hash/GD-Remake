@@ -112,7 +112,8 @@ class Player:
         self.rot_x, self.rot_y = 0.0, 15.0    # where the player was at the last rotation update
         self.dead = False
         self.death_cause = ""
-        self.used = set()                     # uids of objects already activated
+        self.used = frozenset()               # uids of objects already activated (shared by copies: never
+                                              # changed in place, only replaced - snapshots stay cheap)
         # Analysis aid, off in normal play: a jump that starts because the button was
         # ALREADY down when the player landed (a "buffered" jump) counts as a failure,
         # and the gravity-flip grace does not save the player (gd/sim.py _solid).
@@ -126,7 +127,6 @@ class Player:
     def copy(self):
         other = Player.__new__(Player)
         other.__dict__.update(self.__dict__)
-        other.used = set(self.used)
         return other
 
     def flip_mod(self):
@@ -474,7 +474,7 @@ class Player:
         if self.touched_ring:
             return False
         if not obj.multi:
-            self.used.add(obj.uid)
+            self.used = self.used | {obj.uid}
         self.touched_ring = True
         mode, mini = self.mode, self.mini
 

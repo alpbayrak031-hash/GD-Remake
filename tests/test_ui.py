@@ -189,6 +189,69 @@ class StartUp(unittest.TestCase):
         self.assertFalse(settings.get("show_fps"))
 
 
+class GameViewDrawing(unittest.TestCase):
+    """The game view draws only the part of the level near the camera, and moves what
+    triggers move."""
+
+    def setUp(self):
+        import tkinter as tk
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest("no display: %s" % exc)
+        self.addCleanup(self.root.destroy)
+
+    def view(self, level):
+        from gd.render_tk import GameView
+        from gd.sim import Simulation
+        v = GameView(self.root, Simulation(level))
+        v.frame.pack(fill="both", expand=True)
+        self.root.update_idletasks()
+        return v
+
+    def test_only_chunks_near_the_camera_are_on_the_canvas(self):
+        from gd import render_tk
+        b = LevelBuilder()
+        for col in range(0, 2000, 4):                   # a block every 4 columns for 60,000 units
+            b.block(col, 3)
+        v = self.view(b.level())
+        v._draw(0.0)
+        near = len(v.cv.find_withtag("obj0"))
+        self.assertEqual(near, 2, "the first block: its face and its inner line")
+        self.assertEqual(v.cv.find_withtag("obj%d" % 499), (), "the last one is far away")
+        self.assertLess(len(v.drawn), 6)
+        v.sim.player.x = 30000.0
+        v._draw(0.0)
+        self.assertEqual(v.cv.find_withtag("obj0"), (), "dropped once the camera left it")
+        self.assertTrue(v.cv.find_withtag("obj%d" % 250))
+        # level objects stay under the player and the HUD, however late they were drawn
+        order = v.cv.find_all()
+        self.assertLess(order.index(v.cv.find_withtag("obj250")[0]), order.index(v.it_layer))
+        self.assertLess(order.index(v.it_layer), order.index(v.it_bar))
+        self.assertEqual(render_tk.FPS_CAP, 240)
+
+    def test_moved_groups_move_on_screen_and_switched_off_ones_vanish(self):
+        from gd import triggers as T
+        b = LevelBuilder()
+        b.add(1, 315, 105, k57="4")
+        b.add(1, 345, 105, k57="5")
+        b.add(T.MOVE, 0, 300, k51=4, k29=60)            # group 4 jumps up two blocks at once
+        b.add(T.TOGGLE, 0, 330, k51=5, k56=0)           # group 5 is switched off
+        b.block(100, 11)
+        v = self.view(b.level())
+        v._draw(0.0)
+        (moving,) = [i for i in v.cv.find_withtag("k0") if "art" not in v.cv.gettags(i)]
+        y0 = v.cv.coords(moving)[1]
+        v.sim.step(False)
+        v._draw(0.0)
+        self.assertAlmostEqual(v.cv.coords(moving)[1], y0 - 60 * v.zoom, places=3)
+        self.assertEqual(v.cv.find_withtag("k1"), (), "the switched-off block is gone")
+        v.sim.reset()
+        v._draw(0.0)
+        self.assertAlmostEqual(v.cv.coords(moving)[1], y0, places=3)
+        self.assertTrue(v.cv.find_withtag("k1"), "and back after a restart")
+
+
 class FpsCounter(unittest.TestCase):
     def feed(self, durations, start=100.0):
         from gd.fps import FrameStats

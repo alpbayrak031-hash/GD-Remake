@@ -1,7 +1,7 @@
-"""Browsing and downloading public levels from Geometry Dash's own level server.
+"""Downloading a public level from Geometry Dash's own level server by its ID.
 
-These are the same two requests the game makes - "give me a page of levels" and "give me
-this level" - sent to www.boomlings.com.  Nothing is uploaded and no account is used.
+This is the request the game itself makes - "give me this level" - sent to
+www.boomlings.com.  Nothing is uploaded and no account is used.
 
   * HTTPS.  On a Mac the request is made by macOS's own `curl` (it uses the system's
     certificates; the self-contained app carries no TLS library of its own).  Elsewhere
@@ -14,11 +14,10 @@ this level" - sent to www.boomlings.com.  Nothing is uploaded and no account is 
     hand, and a level only ever goes through this program's own level parser.  Nothing
     received is run.
   * The server limits how often it may be asked; the menu only sends a request when the
-    player presses something.
+    player presses Play.
 
 No window code here; gd/menu_tk.py runs these calls on a background thread.
 """
-import base64
 import http.client
 import os
 import shutil
@@ -32,19 +31,12 @@ from .paths import SAVEDATA
 
 HOST = "www.boomlings.com"
 SECRET = "Wmfd2893gb7"                 # the common client value, see above
-TIMEOUT = 15.0                         # seconds to wait for a list of levels ...
-DOWNLOAD_TIMEOUT = 45.0                # ... and for a level (the server can be slow to send a big one)
+TIMEOUT = 45.0                         # seconds to wait for a level (the server can be slow to send a big one)
 MAX_REPLY = 40_000_000                 # bytes; a huge level is a few MB
-LISTS = (("featured", "Featured", 6), ("trending", "Trending", 3), ("downloaded", "Most downloaded", 1),
-         ("liked", "Most liked", 2), ("recent", "Recent", 4), ("awarded", "Rated", 11))
-LENGTHS = ("Tiny", "Short", "Medium", "Long", "XL", "Platformer")
-DEMONS = {3: "Easy Demon", 4: "Medium Demon", 0: "Hard Demon", 5: "Insane Demon", 6: "Extreme Demon"}
-STARS = {0: "Unrated", 1: "Easy", 2: "Normal", 3: "Hard", 4: "Harder", 5: "Insane"}
 # features of a level that this engine does not have, by object id (see gd/objects.py)
-MISSING = {901: "moving objects (move triggers)", 1346: "rotating objects",
-           1347: "objects that follow others", 1007: "fading objects (alpha triggers)",
-           1049: "objects switched on and off (toggle triggers)", 1268: "spawn triggers",
-           747: "teleport portals", 1594: "toggle orbs", 1616: "stop triggers", 1815: "collision triggers"}
+MISSING = {1346: "rotating objects", 1347: "objects that follow others", 1007: "fading objects (alpha triggers)",
+           1594: "toggle orbs", 1616: "stop triggers", 1815: "collision triggers", 1611: "count triggers",
+           1913: "camera triggers", 1914: "camera triggers", 1916: "camera triggers"}
 
 
 class OnlineError(Exception):
@@ -127,70 +119,15 @@ def _text(value, limit=80):
     return " ".join(value.split())[:limit]
 
 
-def _description(value):
-    try:
-        return _text(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)).decode("utf-8", "replace"), 300)
-    except (ValueError, TypeError):
-        return ""
-
-
-def difficulty(f):
-    """A level's difficulty as the game shows it."""
-    if f.get("25") == "1":
-        return "Auto"
-    if f.get("17") == "1":
-        return DEMONS.get(_int(f.get("43")), "Demon")
-    if _int(f.get("8")) == 0:
-        return "Unrated"
-    return STARS.get(_int(f.get("9")) // 10, "Unrated")
-
-
-def browse(list_key="featured", page=0, query=""):
-    """One page of levels -> (levels, total).  `query` searches by name (or an ID)."""
-    if query:
-        fields = {"type": 0, "str": query.strip()[:40], "page": page}
-    else:
-        kind = next((code for key, _label, code in LISTS if key == list_key), 6)
-        fields = {"type": kind, "page": page}
-    reply = _post("/database/getGJLevels21.php", fields)
-    if not reply:
-        return [], 0
-    sections = reply.split("#")
-    creators = {}
-    if len(sections) > 1:
-        for entry in sections[1].split("|"):
-            bits = entry.split(":")
-            if len(bits) >= 2:
-                creators[bits[0]] = _text(bits[1], 24)
-    total = 0
-    if len(sections) > 3:
-        total = _int(sections[3].split(":")[0])
-    levels = []
-    for record in sections[0].split("|"):
-        f = _fields(record)
-        level_id = _int(f.get("1"))
-        if level_id <= 0:
-            continue
-        length = _int(f.get("15"))
-        levels.append({
-            "id": level_id, "name": _text(f.get("2"), 40) or "Unnamed", "creator": creators.get(f.get("6"), "-"),
-            "difficulty": difficulty(f), "stars": _int(f.get("18")), "downloads": _int(f.get("10")),
-            "likes": _int(f.get("14")), "length": LENGTHS[length] if 0 <= length < len(LENGTHS) else "?",
-            "platformer": length == 5, "objects": _int(f.get("45")), "description": _description(f.get("3", "")),
-            "featured": _int(f.get("19")) > 0, "epic": _int(f.get("42")) > 0,
-        })
-    return levels, total
-
-
 def download(level_id):
     """A level's name, creator and decoded level text from the server."""
     level_id = _int(level_id)
     if level_id <= 0:
         raise OnlineError("That is not a level ID.")
     try:
-        reply = _post("/database/downloadGJLevel22.php", {"levelID": level_id}, DOWNLOAD_TIMEOUT)
+        reply = _post("/database/downloadGJLevel22.php", {"levelID": level_id}, TIMEOUT)
     except OnlineError:                       # the server sometimes stalls: one more try
-        reply = _post("/database/downloadGJLevel22.php", {"levelID": level_id}, DOWNLOAD_TIMEOUT)
+        reply = _post("/database/downloadGJLevel22.php", {"levelID": level_id}, TIMEOUT)
     f = _fields(reply.split("#")[0]) if reply else {}
     if _int(f.get("1")) != level_id or not f.get("4"):
         raise OnlineError("That level could not be downloaded (it may have been deleted).")
@@ -216,12 +153,13 @@ def check(name, text):
     return {"simulated": simulated, "objects": total, "missing": sorted(ids)}
 
 
-def fetch(level, folder=None):
-    """Download a level into the cache (savedata/online) -> (path, check result)."""
-    name, text = download(level["id"])
+def fetch(level_id, folder=None):
+    """Download a level into the cache (savedata/online) -> (path, name, check result)."""
+    level_id = _int(level_id)
+    name, text = download(level_id)
     report = check(name, text)
     folder = folder or cache_folder()
     os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, "%d.gmd" % level["id"])
-    write_gmd(path, name, text, creator=_text(level.get("creator"), 24) or "-")
-    return path, report
+    path = os.path.join(folder, "%d.gmd" % level_id)
+    write_gmd(path, name, text)
+    return path, name, report

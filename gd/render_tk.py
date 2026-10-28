@@ -49,6 +49,34 @@ SPIKE_ART = {8: (30, 30), 144: (30, 30), 177: (30, 30), 216: (30, 30),
 # background tint per difficulty, so a level's mood is visible at a glance
 THEMES = {"easy": "#0E1A2E", "medium": "#161A33", "hard": "#231528", "very hard": "#260F18"}
 AUTO_CHECKPOINT_TICKS = 300          # practice mode: one checkpoint every 1.25 s when safe
+FPS_CAP = 240                        # frames a second at most: one per physics step - more only costs battery
+CHUNK = 600.0                        # world units: level objects are drawn and dropped this many at a time
+VIEW_MARGIN = 360.0                  # ... and drawn this far beyond the screen's edges, so nothing pops in
+
+
+def _chunks(objects):
+    """Objects bucketed by where they start -> [(min x, max x, objects)]."""
+    buckets = {}
+    for o in objects:
+        buckets.setdefault(int(o.minx // CHUNK), []).append(o)
+    return [(min(o.minx for o in objs), max(o.maxx for o in objs), objs) for _k, objs in sorted(buckets.items())]
+
+
+def _hex(rgb):
+    return "#%02x%02x%02x" % rgb
+
+
+def level_backdrop(level, theme_bg):
+    """(background, ground) colours for a level: its own, from the level file, darkened so
+    the drawn objects stay readable - or the difficulty theme for levels without colours."""
+    bg, ground = level.colours.get(1000), level.colours.get(1001)
+    if bg is None:
+        return theme_bg, blend(theme_bg, "#000000", 0.45)
+
+    def dim(rgb, limit):
+        top = max(rgb)
+        return _hex(tuple(int(c * limit / top) for c in rgb)) if top > limit else _hex(rgb)
+    return dim(bg, 64), dim(ground or (0, 0, 0), 40)
 
 
 class Painter:
@@ -61,6 +89,9 @@ class Painter:
     cv = None
     zoom = 1.5
     _made = None
+    _extra = ()                          # tags every new item also gets (draw_object's `tag`)
+    block_fill, block_line, block_inner = COL_SOLID_FILL, COL_SOLID, "#33456F"
+    hazard_fill, hazard_line, hazard_inner = COL_HAZARD_FILL, COL_HAZARD, "#9C2B36"
 
     def _track(self, item):
         if self._made is not None:
@@ -68,14 +99,22 @@ class Painter:
         return item
 
     def draw_object(self, o, tag=None):
-        """Draw one object; returns its canvas items (all given `tag` if one is passed)."""
+        """Draw one object; returns its canvas items (all given `tag` - or every tag in a
+        tuple - if one is passed)."""
         self._made = []
-        self._draw_object(o)
+        self._extra = (tag,) if isinstance(tag, str) else tuple(tag or ())
+        try:
+            self._draw_object(o)
+        finally:
+            self._extra = ()
         items, self._made = self._made, None
-        if tag:
-            for item in items:
-                self.cv.addtag_withtag(tag, item)
         return items
+
+    def _tags(self, kw):
+        if self._extra:
+            t = kw.get("tags") or ()
+            kw["tags"] = ((t,) if isinstance(t, str) else tuple(t)) + self._extra
+        return kw
 
     # ------------------------------------------------------------------ helpers
     def _wx(self, x):
@@ -88,19 +127,20 @@ class Painter:
         flat = []
         for x, y in pts:
             flat += [self._wx(x), self._wy(y)]
-        return self._track(self.cv.create_polygon(*flat, **kw))
+        return self._track(self.cv.create_polygon(*flat, **self._tags(kw)))
 
     def _rect(self, minx, maxx, miny, maxy, **kw):
         return self._track(self.cv.create_rectangle(self._wx(minx), self._wy(maxy), self._wx(maxx),
-                                                    self._wy(miny), **kw))
+                                                    self._wy(miny), **self._tags(kw)))
 
     def _oval(self, x, y, r, **kw):
         return self._track(self.cv.create_oval(self._wx(x - r), self._wy(y + r), self._wx(x + r),
-                                               self._wy(y - r), **kw))
+                                               self._wy(y - r), **self._tags(kw)))
 
     def _text(self, x, y, text, colour, size=9, **kw):
         return self._track(self.cv.create_text(self._wx(x), self._wy(y), text=text, fill=colour,
-                                               font=ui.font(max(7, int(size * self.zoom / 1.5)), True), **kw))
+                                               font=ui.font(max(7, int(size * self.zoom / 1.5)), True),
+                                               **self._tags(kw)))
 
     @staticmethod
     def _rot(points, cx, cy, deg):
@@ -117,20 +157,30 @@ class Painter:
         k = o.kind
         if k in (O.SOLID, O.BREAKABLE):
             dash = (3, 3) if k == O.BREAKABLE else None
+            width = max(1, int(round(self.zoom)))
             if o.corners:
-                self._poly(o.corners, fill=COL_SOLID_FILL, outline=COL_SOLID, tags=("obj%d" % o.uid,))
+                self._poly(o.corners, fill=self.block_fill, outline=self.block_line, width=width,
+                           tags=("obj%d" % o.uid,))
             else:
-                self._rect(o.minx, o.maxx, o.miny, o.maxy, fill=COL_SOLID_FILL, outline=COL_SOLID,
-                           dash=dash, tags=("obj%d" % o.uid,))
+                self._rect(o.minx, o.maxx, o.miny, o.maxy, fill=self.block_fill, outline=self.block_line,
+                           width=width, dash=dash, tags=("obj%d" % o.uid,))
+                inset = 4.0
+                if o.maxx - o.minx > 3 * inset and o.maxy - o.miny > 3 * inset and not dash:
+                    self._rect(o.minx + inset, o.maxx - inset, o.miny + inset, o.maxy - inset, fill="",
+                               outline=self.block_inner, tags=("obj%d" % o.uid, "art"))
         elif k == O.HAZARD:
             art = SPIKE_ART.get(o.id)
             if art:
                 aw, ah = art
                 base = o.y - (15.0 if ah > 20 else ah / 2.0)
                 pts = [(o.x - aw / 2, base), (o.x + aw / 2, base), (o.x, base + ah)]
-                self._poly(self._rot(pts, o.x, o.y, o.rot), fill=COL_HAZARD_FILL, outline=COL_HAZARD, tags="art")
-            self._poly(self._box(o), fill="" if art else COL_HAZARD_FILL, outline=HIT_HAZARD if art else COL_HAZARD,
-                       width=1, tags="hit" if art else "")
+                self._poly(self._rot(pts, o.x, o.y, o.rot), fill=self.hazard_fill, outline=self.hazard_line,
+                           width=max(1, int(round(self.zoom))), tags="art")
+                inner = [(o.x - aw * 0.22, base + ah * 0.16), (o.x + aw * 0.22, base + ah * 0.16),
+                         (o.x, base + ah * 0.6)]
+                self._poly(self._rot(inner, o.x, o.y, o.rot), fill=self.hazard_inner, outline="", tags="art")
+            self._poly(self._box(o), fill="" if art else self.hazard_fill,
+                       outline=HIT_HAZARD if art else self.hazard_line, width=1, tags="hit" if art else "")
         elif k == O.SAW:
             self._oval(o.x, o.y, o.radius * 1.5, fill=COL_HAZARD_FILL, outline=COL_HAZARD, tags="art")
             self._oval(o.x, o.y, o.radius * 0.5, fill=BG, outline=COL_HAZARD, tags="art")
@@ -139,8 +189,8 @@ class Painter:
             a, b, c, d = (o.minx, o.miny), (o.maxx, o.miny), (o.maxx, o.maxy), (o.minx, o.maxy)
             tri = {0: (a, b, c), 1: (a, b, d), 2: (a, c, d), 3: (b, c, d)}[o.orient]
             hazard = k == O.SLOPE_HAZARD
-            self._poly(tri, fill=COL_HAZARD_FILL if hazard else COL_SOLID_FILL,
-                       outline=COL_HAZARD if hazard else COL_SLOPE)
+            self._poly(tri, fill=self.hazard_fill if hazard else self.block_fill,
+                       outline=self.hazard_line if hazard else self.block_line, width=max(1, int(round(self.zoom))))
         elif k == O.ORB:
             col = ORB_COLORS.get(o.arg, "#ffffff")
             self._oval(o.x, o.y, 17, fill="", outline=col, width=2, tags="art")
@@ -148,8 +198,8 @@ class Painter:
             self._poly(self._box(o), fill="", outline=HIT_SPECIAL, dash=(2, 3), tags="hit")
             if o.arg in ("dash", "gravity_dash"):
                 tip = self._rot([(o.x + 27, o.y)], o.x, o.y, o.rot + (180 if o.flip_x else 0))[0]
-                self._track(self.cv.create_line(self._wx(o.x), self._wy(o.y), self._wx(tip[0]),
-                                                self._wy(tip[1]), fill=col, width=2, arrow="last", tags="art"))
+                self._track(self.cv.create_line(self._wx(o.x), self._wy(o.y), self._wx(tip[0]), self._wy(tip[1]),
+                                                **self._tags(dict(fill=col, width=2, arrow="last", tags="art"))))
         elif k == O.PAD:
             col = PAD_COLORS.get(o.arg, "#ffffff")
             # the pad itself is only 4-6 units tall: draw a chunkier base so it is easy to see
@@ -183,6 +233,8 @@ class Painter:
             return "#FF7AD9" if o.arg else "#59E36B"
         if k == O.PORTAL_DUAL:
             return "#FF9F1C" if o.arg else "#3D8BFF"
+        if k == O.PORTAL_TELEPORT:
+            return "#3D9BFF"
         return SPEED_COLORS.get(o.arg, "#ffffff")
 
     def _draw_portal(self, o):
@@ -209,14 +261,14 @@ class Painter:
             self._poly(self._ellipse(o, rx - 4, ry - 6), fill="", outline=light, width=1, tags="art")
             cx, cy = self._wx(o.x), self._wy(o.y)
             if k == O.PORTAL_MODE:
-                for item in icons.draw_icon(self.cv, o.arg, cx, cy, 9.5 * z):
+                for item in icons.draw_icon(self.cv, o.arg, cx, cy, 9.5 * z, tags=self._extra):
                     self._track(item)
                 self._text(o.x, o.maxy + 11, icons.MODE_NAMES[o.arg].upper(), col, tags="art")
             elif k == O.PORTAL_DUAL:                    # two icons, one upside down - or just one
                 pairs = ((cy - 13 * z, False), (cy + 13 * z, True)) if o.arg else ((cy, False),)
                 for iy, flipped in pairs:
                     for item in icons.draw_icon(self.cv, 0, cx, iy, 7.5 * z, flipped=flipped,
-                                                colour=light if flipped else col):
+                                                colour=light if flipped else col, tags=self._extra):
                         self._track(item)
                 self._text(o.x, o.maxy + 11, "DUAL" if o.arg else "DUAL OFF", col, tags="art")
             elif k == O.PORTAL_GRAVITY:
@@ -226,6 +278,13 @@ class Painter:
                     pts = [(o.x - 8, base - 6 * d), (o.x + 8, base - 6 * d), (o.x, base + 10 * d)]
                     self._poly(self._rot(pts, o.x, o.y, o.rot) if o.rot else pts, fill=light, outline=col, width=1)
                 self._text(o.x, o.maxy + 11, "GRAVITY", col, tags="art")
+            elif k == O.PORTAL_TELEPORT:
+                # the exit, `arg` units above: an orange ring of the same size
+                exit_y = o.y + o.arg
+                pts = [(o.x + rx * math.cos(2 * math.pi * i / 28), exit_y + ry * math.sin(2 * math.pi * i / 28))
+                       for i in range(28)]
+                self._poly(pts, fill=blend("#FF9F1C", self.portal_bg, 0.7), outline="#FF9F1C", width=line, tags="art")
+                self._text(o.x, o.maxy + 11, "TELEPORT", col, tags="art")
             else:
                 half = 4 if o.arg else 9
                 self._rect(o.x - half, o.x + half, o.y - half, o.y + half, fill=light, outline=col, width=1)
@@ -264,14 +323,18 @@ class GameView(Painter):
         self.show_debug = debug
         self.show_fps = settings.get("show_fps")      # remembered between levels and sessions
         self.frames = FrameStats()
+        self.slack = 0.0                              # seconds the frame timer is set short by (see _frame)
         self.fps_next = 0.0                           # when the FPS text is next refreshed
         self.show_trail = False
         self.practice = practice and inputs is None
         self.progress = progress if inputs is None else None      # a bot's run never counts
         self.key = key
         self.on_exit = on_exit
-        self.bg = THEMES.get(theme, BG)
+        self.bg, self.ground = level_backdrop(sim.level, THEMES.get(theme, BG))
         self.portal_bg = self.bg
+        self.block_fill = blend(self.bg, "#000000", 0.55)
+        self.block_line = blend(COL_SOLID, "#FFFFFF", 0.35)
+        self.block_inner = blend(self.block_fill, self.block_line, 0.28)
         self.paused = False
         self.panel = None                     # None, "pause" or "complete"
         self.rate = 1.0
@@ -338,14 +401,78 @@ class GameView(Painter):
 
     # ------------------------------------------------------------------ scene
     def _build_static(self):
-        lv = self.sim.level
-        left, right = -900.0, lv.end_x + 1500.0
-        self._rect(left, right, -600.0, 0.0, fill="#080A11", outline="")
-        self.cv.create_line(self._wx(left), self._wy(0), self._wx(right), self._wy(0), fill="#DDE3F0", width=2)
-        self.cv.create_line(self._wx(lv.end_x), self._wy(0), self._wx(lv.end_x), self._wy(2400),
-                            fill=ui.GREEN, width=2, dash=(8, 6))
-        for o in lv.objects:
-            self.draw_object(o)
+        lv, cv = self.sim.level, self.cv
+        left, right = -1500.0, lv.end_x + 2500.0
+        # the sky gets a little lighter towards the ground, the way GD's backgrounds read
+        top = max(1500.0, lv.max_y)
+        bands = 7
+        for i in range(bands):
+            y0 = 60.0 + (top - 60.0) * i / bands
+            self._rect(left, right, 0.0 if i == 0 else y0, top + 600.0 if i == bands - 1 else 60.0 + (top - 60.0) * (i + 1) / bands,
+                       fill=blend(self.bg, "#FFFFFF", 0.035 * (bands - i) / bands), outline="")
+        self._rect(left, right, -900.0, 0.0, fill=self.ground, outline="")
+        self._rect(left, right, -60.0, 0.0, fill=blend(self.ground, "#FFFFFF", 0.05), outline="")
+        line = blend(self.ground, "#FFFFFF", 0.9)
+        cv.create_line(self._wx(left), self._wy(0), self._wx(right), self._wy(0), fill=blend(line, self.bg, 0.6),
+                       width=max(3, int(4 * self.zoom)))
+        cv.create_line(self._wx(left), self._wy(0), self._wx(right), self._wy(0), fill=line, width=2)
+        cv.create_line(self._wx(lv.end_x), self._wy(0), self._wx(lv.end_x), self._wy(top),
+                       fill=ui.GREEN, width=2, dash=(8, 6))
+        # level objects are drawn near the camera only (_cull) and always stay below this
+        self.it_layer = cv.create_line(0, 0, 0, 0, state="hidden")
+        tr = lv.triggers
+        self.chunks = _chunks(tr.static if tr is not None else lv.objects)
+        self.drawn = set()                            # chunk indices on the canvas
+        self.cl_chunks = [_chunks(c.objects) for c in tr.clusters] if tr is not None else []
+        self.cl_drawn = set()                         # (cluster, chunk) on the canvas
+        self.cl_at = [(0.0, 0.0)] * len(self.cl_chunks)   # how far each cluster's items have been moved
+
+    def _cull(self, x0, x1):
+        """Draw the chunks of the level that are on (or near) the screen and drop the rest;
+        move the groups that triggers have moved."""
+        cv, z = self.cv, self.zoom
+        made = []
+        drawn = self.drawn
+        for i, (a, b, objs) in enumerate(self.chunks):
+            want = a <= x1 and b >= x0
+            if want != (i in drawn):
+                tag = "c%d" % i
+                if want:
+                    for o in objs:
+                        self.draw_object(o, tag)
+                    drawn.add(i)
+                    made.append(tag)
+                else:
+                    cv.delete(tag)
+                    drawn.discard(i)
+        trig = self.sim.trig
+        if trig is not None:
+            for k, chunks in enumerate(self.cl_chunks):
+                off = trig.off[k]
+                dx, dy = trig.offsets[k]
+                at = self.cl_at[k]
+                if not off and (dx, dy) != at:
+                    cv.move("k%d" % k, (dx - at[0]) * z, (at[1] - dy) * z)
+                    self.cl_at[k] = at = (dx, dy)
+                for j, (a, b, objs) in enumerate(chunks):
+                    want = not off and a + dx <= x1 and b + dx >= x0
+                    key = (k, j)
+                    if want != (key in self.cl_drawn):
+                        tag = "k%d_%d" % key
+                        if want:
+                            for o in objs:
+                                self.draw_object(o, (tag, "k%d" % k))
+                            if at != (0.0, 0.0):
+                                cv.move(tag, at[0] * z, -at[1] * z)
+                            self.cl_drawn.add(key)
+                            made.append(tag)
+                        else:
+                            cv.delete(tag)
+                            self.cl_drawn.discard(key)
+        for tag in made:
+            cv.tag_lower(tag, self.it_layer)
+            if not self.show_hit:
+                cv.itemconfigure(tag + "&&hit", state="hidden")
 
     def _build_dynamic(self):
         cv = self.cv
@@ -711,7 +838,13 @@ class GameView(Painter):
                     self.save_recording()
                     self.restart()
         self._draw(now)
-        self.cv.after(5, self._frame)
+        self.cv.update_idletasks()                    # paint this frame now, before the next one starts
+        # Tk's timers run late by a varying amount (on macOS after(n) waits about 1.3 n ms), so
+        # the wait is trimmed by however much the frames have been running over
+        period = 1.0 / FPS_CAP
+        self.slack = min(period, max(0.0, self.slack + (0.0001 if dt > period else -0.0001)))
+        wait = (now + period - self.slack - time.perf_counter()) * 1000.0
+        self.cv.after(max(1, int(round(wait))), self._frame)
 
     def _draw_second(self, q, z):
         """Dual mode: the second icon (and its two boxes when hitboxes are shown)."""
@@ -754,6 +887,7 @@ class GameView(Painter):
             cv.yview_moveto(0)
         else:
             left, top = cv.canvasx(0), cv.canvasy(0)
+        self._cull(left / z - VIEW_MARGIN, (left + w) / z + VIEW_MARGIN)
 
         if sim.ceiling is not None:
             x0, x1 = p.x - 2000, p.x + 3000

@@ -71,6 +71,7 @@ class Effects:
         self.it_flame = [(cv.create_polygon(0, 0, 0, 0, 0, 0, outline="", fill=FLAME, **hidden),
                           cv.create_polygon(0, 0, 0, 0, 0, 0, outline="", fill=FLAME_CORE, **hidden)) for _ in range(3)]
         self.it_part = [cv.create_rectangle(0, 0, 0, 0, outline="", **hidden) for _ in range(MAX_PARTICLES)]
+        self.shown = {}                                  # item -> its options as last set (None: hidden)
         self.reset()
 
     def reset(self):
@@ -239,6 +240,18 @@ class Effects:
             self.particles.append([x, y, vx, vy, life, life, size, colour, gravity])
 
     # ------------------------------------------------------------------ per drawn frame
+    def _hide(self, item):
+        if self.shown.get(item, None) is not None or item not in self.shown:
+            self.cv.itemconfigure(item, state="hidden")
+            self.shown[item] = None
+
+    def _show(self, item, **options):
+        """Show an item with these options - asking Tk only when something changed."""
+        key = tuple(sorted(options.items()))
+        if self.shown.get(item) != key:
+            self.cv.itemconfigure(item, state="normal", **options)
+            self.shown[item] = key
+
     def draw(self, dt, now, camera_left):
         cv, z, bg = self.cv, self.z, self.bg
 
@@ -249,16 +262,16 @@ class Effects:
         for k, item in enumerate(self.it_seg):
             i0, i1 = n - 1 - k * step, n - 1 - (k + 1) * step
             if i1 < 0:
-                cv.itemconfigure(item, state="hidden")
+                self._hide(item)
                 continue
             x0, y0, on0, w0, col = hist[i0]
             x1, y1, on1, _w, _c = hist[i1]
             if not (on0 and on1) or abs(x0 - x1) > 80:
-                cv.itemconfigure(item, state="hidden")
+                self._hide(item)
                 continue
             strength = TRAIL_OPACITY * (1.0 - (k + 0.5) / SEGMENTS)
             cv.coords(item, x0 * z, -y0 * z, x1 * z, -y1 * z)
-            cv.itemconfigure(item, state="normal", fill=blend(bg, col, strength), width=max(1.0, w0 * z))
+            self._show(item, fill=blend(bg, col, strength), width=max(1.0, w0 * z))
 
         # --- wave trail
         pts = self.wave_points
@@ -285,28 +298,28 @@ class Effects:
                     for x, y in reversed(bottom):
                         flat += [x * z, -y * z]
                     cv.coords(item, *flat)
-                    cv.itemconfigure(item, state="normal", fill=blend(bg, colour, fade))
+                    self._show(item, fill=blend(bg, colour, fade))
                 else:
-                    cv.itemconfigure(item, state="hidden")
+                    self._hide(item)
         else:
-            cv.itemconfigure(self.it_wave, state="hidden")
-            cv.itemconfigure(self.it_core, state="hidden")
+            self._hide(self.it_wave)
+            self._hide(self.it_core)
 
         # --- spider beam
         if self.beam:
             x0, y0, x1, y1, left, colour = self.beam
             strength = left / float(BEAM_TICKS)
             cv.coords(self.it_beam, x0 * z, -y0 * z, x1 * z, -y1 * z)
-            cv.itemconfigure(self.it_beam, state="normal", fill=blend(bg, colour, strength),
+            self._show(self.it_beam, fill=blend(bg, colour, strength),
                              width=max(1.0, 9.0 * strength * z))
         else:
-            cv.itemconfigure(self.it_beam, state="hidden")
+            self._hide(self.it_beam)
 
         # --- fire
         for i, (outer, inner) in enumerate(self.it_flame):
             if i >= len(self.flames) or self.flames[i][4] <= 0.5:
-                cv.itemconfigure(outer, state="hidden")
-                cv.itemconfigure(inner, state="hidden")
+                self._hide(outer)
+                self._hide(inner)
                 continue
             x, y, dx, dy, length, half = self.flames[i]
             d = math.hypot(dx, dy) or 1.0
@@ -316,7 +329,7 @@ class Effects:
                 px, py = -dy * half * k, dx * half * k
                 tx, ty = x + dx * length * k, y + dy * length * k
                 cv.coords(item, (x + px) * z, -(y + py) * z, tx * z, -ty * z, (x - px) * z, -(y - py) * z)
-                cv.itemconfigure(item, state="normal")
+                self._show(item)
 
         # --- particles
         alive = []
@@ -331,10 +344,10 @@ class Effects:
         self.particles = alive
         for i, item in enumerate(self.it_part):
             if i >= len(alive):
-                cv.itemconfigure(item, state="hidden")
+                self._hide(item)
                 continue
             x, y, _vx, _vy, life, max_life, size, colour, _g = alive[i]
             t = life / max_life
             s = size * (0.4 + 0.6 * t) / 2.0
             cv.coords(item, (x - s) * z, -(y + s) * z, (x + s) * z, -(y - s) * z)
-            cv.itemconfigure(item, state="normal", fill=blend(bg, colour, 0.25 + 0.75 * t))
+            self._show(item, fill=blend(bg, colour, 0.25 + 0.75 * t))

@@ -803,5 +803,39 @@ class DualMode(unittest.TestCase):
         self.assertFalse(sim.dead, sim.player.death_cause)
 
 
+class Bot(unittest.TestCase):
+    """gd/autoplay.py: what the search skips, and what it proves."""
+
+    def test_options_skip_presses_that_cannot_matter(self):
+        from gd.autoplay import _options
+        sim = make(build=lambda b: b.add(36, 30 * 30, 75))    # a yellow orb far ahead
+        p = settle(sim)
+        self.assertEqual(_options(sim, False, True), (False, True), "on the ground: both")
+        sim.step(True)
+        steps(sim, 3)
+        self.assertFalse(p.can_jump)
+        self.assertEqual(_options(sim, False, True), (False,), "in the air, no orb near: pressing does nothing")
+        self.assertEqual(_options(sim, True, False), (False, True), "unless holding on into a landing is allowed")
+        p.x = 30 * 30 - 40.0
+        self.assertEqual(_options(sim, False, True), (False, True), "an orb ahead: pressing can matter")
+        sim2 = make(mode=1)                                    # ship: always both
+        steps(sim2, 5)
+        self.assertEqual(_options(sim2, False, True), (False, True))
+
+    def test_no_route_is_proven_quickly(self):
+        from gd.autoplay import solve
+        import time as clock
+        sim = make(build=lambda b: [b.block(15, r) for r in range(12)])    # a wall nobody can pass
+        t = clock.time()
+        self.assertIsNone(solve(sim, chunk=4, max_nodes=10 ** 7))
+        self.assertLess(clock.time() - t, 20.0)
+
+    def test_the_bot_leaves_the_icon_angle_for_the_screen(self):
+        from gd.autoplay import solve
+        sim = make()
+        solve(sim, chunk=8, max_nodes=1000)
+        self.assertTrue(sim.visual, "a game view gets a simulation that works out the angle again")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
