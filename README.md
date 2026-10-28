@@ -709,8 +709,11 @@ and another simulator. Treat "frame-accurate" as a goal, not a claim.
   the opposite gravity, the play area gets a floor and a ceiling like a flying mode's
   (300 units for cube and robot), one button controls both icons, losing either ends the
   attempt, and portals change only the icon that touches them; the other dual portal
-  (287) removes the second icon. Exact spawn position, bounds and how GD treats portals
-  in dual are unverified.
+  (287) removes the second icon. A mode portal only one icon touches does not move the
+  floor and ceiling, and the second icon is not changed by portals the first one touches
+  in the step it appears (a mode portal stacked on the dual portal) - both because levels
+  are built that way (Dear Nostalgists, ID 18735780, is not beatable otherwise). Exact
+  spawn position, bounds and how GD treats portals in dual are unverified.
 
 **Not implemented**
 

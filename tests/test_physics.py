@@ -774,6 +774,28 @@ class DualMode(unittest.TestCase):
         self.assertIn("second icon", sim.player.death_cause)
         self.assertLess(sim.player.x, 30 * 21)
 
+    def test_a_mode_portal_one_icon_takes_does_not_move_the_floor_and_ceiling(self):
+        # only the first icon (on the floor) meets this ship portal, low down
+        sim = self.level(lambda lv: lv.add(13, 15 + 30 * 20, 45))
+        run_until(self, sim, lambda s: s.player2 is not None)
+        bounds = (sim.floor, sim.ceiling)
+        run_until(self, sim, lambda s: s.player.x > 30 * 21)
+        self.assertEqual(sim.player.mode, Mode.SHIP)
+        self.assertEqual(sim.player2.mode, Mode.CUBE, "only the icon that touched it")
+        self.assertEqual((sim.floor, sim.ceiling), bounds, "the play area stays where the dual portal put it")
+
+    def test_a_mode_portal_stacked_on_the_dual_portal_changes_only_the_first_icon(self):
+        # level order: dual portal, then a ship portal at the same spot (as levels stack them)
+        def b(lv):
+            lv.add(self.DUAL_ON, 315, 45)
+            lv.add(13, 315, 45)
+            lv.add(self.DUAL_OFF, 15 + 30 * 40, 45)
+        sim = make(build=b)
+        run_until(self, sim, lambda s: s.player2 is not None)
+        steps(sim, 30)
+        self.assertEqual(sim.player.mode, Mode.SHIP)
+        self.assertEqual(sim.player2.mode, Mode.CUBE, "the second icon keeps the mode it was copied with")
+
     def test_dual_off(self):
         sim = self.level(off_col=25)
         run_until(self, sim, lambda s: s.player2 is not None)

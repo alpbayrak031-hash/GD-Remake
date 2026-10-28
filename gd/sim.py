@@ -141,6 +141,7 @@ class Simulation:
         pressed = bool(pressed)
         changed = pressed != self.button
         self.button = pressed
+        solo = self.player2 is None
         for q in (p, self.player2):              # in dual mode one button drives both icons
             if q is None:
                 continue
@@ -151,6 +152,10 @@ class Simulation:
                     q.release_button()
             q.update(C.DT)
             self._collide(q)
+            if solo and q is p and self.player2 is not None:
+                # the second icon appeared during this step: what the first one touched in the
+                # same step (often a mode portal stacked on the dual portal) counts as passed
+                self.player2.used = self.player2.used | p.used
             if not q.dead:
                 if self.visual or self._angled:      # the angle only matters next to angled objects
                     q.update_rotation(C.DT)
@@ -186,7 +191,14 @@ class Simulation:
     # modelled is the game as it plays: the dual portal adds a second icon at the same
     # spot with the opposite gravity, the play area gets a floor and a ceiling like a
     # flying mode's, one button controls both icons, losing either one ends the attempt,
-    # and portals change only the icon that touches them.
+    # and portals change only the icon that touches them.  A mode portal only one icon
+    # touches does not move that floor and ceiling: levels are built that way - in Dear
+    # Nostalgists (ID 18735780) the bottom icon takes a robot portal 90 units below the
+    # dual portal, and re-centring there would crush the top icon into the blocks it is
+    # meant to run along.  The second icon starts as a copy of the first at the moment the
+    # dual portal is touched, and portals the first touches in that same step (a mode portal
+    # stacked on the dual portal) do not change it: the same level stacks speed, dual and
+    # cube portals and later gives the top icon a cube portal of its own.
     def _bounds_around(self, y, mode):
         bounds = _BOUNDS.get(mode)
         if bounds is None and self.player2 is not None:
@@ -361,8 +373,10 @@ class Simulation:
             mode = Mode(o.arg)
             if p.set_mode(mode):
                 self._note("mode -> %s" % mode.name.lower())
-            # gd-sim VehiclePortal.cpp: the play area is re-centred on every mode portal
-            self._bounds_around(o.y, mode)
+            # gd-sim VehiclePortal.cpp: the play area is re-centred on every mode portal -
+            # but not in dual mode, where it stays where the dual portal put it (see below)
+            if self.player2 is None:
+                self._bounds_around(o.y, mode)
         elif kind == O.PORTAL_DUAL:
             p.used = p.used | {o.uid}
             self._dual(p, o)
