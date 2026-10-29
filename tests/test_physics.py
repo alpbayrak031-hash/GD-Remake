@@ -270,6 +270,29 @@ class Pads(unittest.TestCase):
     def test_yellow(self):
         self.assertEqual(self.launch(35).y_vel, 16.0)            # gd-sim 864 u/s
 
+    def bounces(self, multi):
+        """Blue pads on a floor and a ceiling that follow the player (a move trigger locked
+        to its X for 8 blocks): how often a pad sends it the other way."""
+        from gd import triggers as T
+        b = LevelBuilder()
+        b.add(291, 150, 15)                                    # a slope up onto the floor block
+        b.add(291, 150, 195, rot=180, flip_x=True)
+        extra = {"k99": "1"} if multi else {}
+        b.add(1, 195, 15, rot=180, flip_x=True, k57="1")
+        b.add(67, 195, 33, k57="1", **extra)
+        b.add(67, 195, 177, rot=180, k57="1", **extra)
+        b.add(1, 195, 195, rot=180, k57="1")
+        b.add(T.MOVE, 210, 105, k10="0.77", k11="1", k51="1", k58="1")
+        sim = Simulation(b.level())
+        while not sim.dead and not sim.finished and sim.tick < 3000:
+            sim.step(False)
+        self.assertTrue(sim.finished)
+        return sum(1 for _t, text in sim.log if text == "blue pad")
+
+    def test_a_pad_works_once_unless_it_is_multi_activate(self):
+        self.assertEqual(self.bounces(False), 2, "floor pad, ceiling pad, then they are spent")
+        self.assertGreater(self.bounces(True), 4, "they keep sending it back and forth")
+
     def test_pink(self):
         self.assertEqual(self.launch(140).y_vel, 10.4)           # gd-sim 561.6 u/s
 

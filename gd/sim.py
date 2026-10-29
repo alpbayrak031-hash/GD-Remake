@@ -71,6 +71,7 @@ class Simulation:
         self.destroyed = set()            # uids of broken breakable blocks
         self.log = []                     # (tick, text) - what the player touched
         self._launch = None
+        self._pads_now = set()            # multi-activate pads touched in the current collision check
         self.player2 = None               # the second icon while dual mode is on
         p = self.player = Player(self)
         p.fix_gravity_bug = lv.fix_gravity_bug
@@ -281,6 +282,7 @@ class Simulation:
         hw, hh = p.half_w, p.half_h
         solids, hazards = [], []
         self._launch = None
+        self._pads_now = set()
         for o in self.query(p.x - hw - m, p.x + hw + m, p.y - hh - m, p.y + hh + m):
             kind = o.kind
             if kind in _SOLIDS:
@@ -300,6 +302,8 @@ class Simulation:
                     self._touch(p, o)
                 if p.dead:
                     return
+        if self._pads_now or p.on_pads:
+            p.on_pads = frozenset(self._pads_now)
 
         if self._launch is not None and not p.is_on_slope:
             # topped out on an uphill slope and no further slope caught the player:
@@ -386,12 +390,21 @@ class Simulation:
             if p.ring_jump(o):
                 self._note("%s orb" % o.arg)
         elif kind == O.PAD:
+            # A pad works once per attempt unless it is set to Multi Activate (key 99, GD 2.2 -
+            # from memory).  EST: such a pad fires again only after the icon has left it, so
+            # it does not fire on every step the icon spends crossing it.
+            if o.multi:
+                self._pads_now.add(o.uid)
+                if o.uid in p.on_pads:
+                    return
             if o.arg == "blue":
                 if p.gravity_bump(o):
-                    p.used = p.used | {o.uid}
+                    if not o.multi:
+                        p.used = p.used | {o.uid}
                     self._note("blue pad")
             else:
-                p.used = p.used | {o.uid}
+                if not o.multi:
+                    p.used = p.used | {o.uid}
                 p.bump(o)
                 self._note("%s pad" % o.arg)
         elif kind == O.PORTAL_GRAVITY:

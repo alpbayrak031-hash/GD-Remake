@@ -540,6 +540,10 @@ FIELDS = {
     747: [(54, "Exit portal: blocks above", "float", 30)],
 }
 TRIGGER_FLAGS = [(11, "Touch triggered", "bool", 1), (62, "Spawn triggered", "bool", 1), (87, "Multi trigger", "bool", 1)]
+# pads and orbs work once per attempt unless this is ticked (GD 2.2's Multi Activate, key 99)
+for _oid, _spec in O.OBJECTS.items():
+    if _spec.kind in (O.PAD, O.ORB):
+        FIELDS[_oid] = [(99, "Multi activate (works every time)", "bool", 1)]
 GROUPS_FIELD = (57, "Groups (e.g. 1, 4)", "groups", 1)
 
 
@@ -551,7 +555,7 @@ def fields_for(objs):
     if len(ids) == 1:
         oid = ids.pop()
         fields += FIELDS.get(oid, [])
-        if oid in FIELDS and oid != 747:
+        if oid in FIELDS and is_trigger(oid):
             fields += TRIGGER_FLAGS
     return fields
 

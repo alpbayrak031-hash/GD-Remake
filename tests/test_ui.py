@@ -671,6 +671,12 @@ class EditorTriggersAndDecoration(unittest.TestCase):
             self.assertIsNotNone(o.deco, label)
         self.assertIn((747, "Teleport"), tabs["Other portals"])
 
+    def test_pads_and_orbs_can_be_set_to_multi_activate(self):
+        from gd.editor_model import EdObject, fields_for
+        for oid in (35, 67, 36, 1704):
+            keys = [f[0] for f in fields_for([EdObject({1: str(oid), 2: "15", 3: "15"})])]
+            self.assertEqual(keys, [57, 99], oid)
+
     def test_a_trigger_set_up_in_the_window_works_in_the_level(self):
         from gd.editor_model import LevelDocument, fields_for, form_values, parse_form
         from gd.sim import Simulation

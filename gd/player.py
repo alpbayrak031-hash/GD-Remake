@@ -114,6 +114,7 @@ class Player:
         self.death_cause = ""
         self.used = frozenset()               # uids of objects already activated (shared by copies: never
                                               # changed in place, only replaced - snapshots stay cheap)
+        self.on_pads = frozenset()            # multi-activate pads touched at the last collision check
         # Analysis aid, off in normal play: a jump that starts because the button was
         # ALREADY down when the player landed (a "buffered" jump) counts as a failure,
         # and the gravity-flip grace does not save the player (gd/sim.py _solid).

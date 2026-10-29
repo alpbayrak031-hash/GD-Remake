@@ -453,7 +453,9 @@ lines, art slopes, fake spikes, ground spikes, balls, chains and clouds.
 **Properties (I, or the button on top).** For the selection - or, with nothing selected,
 the object under the mouse - a small window sets its **groups** and, for a trigger, what it
 does: target group, move offset (in blocks), duration, easing, delay, opacity, colour,
-touch / spawn / multi triggered; for a teleport portal, how far above its exit is. A
+touch / spawn / multi triggered; for a teleport portal, how far above its exit is; for a
+pad or an orb, **Multi activate** - without it, a pad or orb works only once per attempt,
+as in GD, so tick it on pads the player should bounce off again and again. A
 trigger is drawn as a labelled box with its target group, the way GD's editor shows them,
 so `MOVE 4` moves group 4.
 The object under the cursor is previewed exactly where it will land, and the status line
@@ -769,7 +771,9 @@ and another simulator. Treat "frame-accurate" as a goal, not a claim.
   ```
 
   Kinds: `solid`, `breakable`, `hazard`, `saw` (`arg` = radius), `slope`, `slope_hazard`.
-- Object keys 99 (multi-activate), 121 (No Touch) and 134 (Passable) are from memory.
+- Object keys 99 (multi-activate), 121 (No Touch) and 134 (Passable) are from memory. A
+  multi-activate pad fires again only once the icon has left it (EST: so it does not fire
+  on every step the icon spends crossing it).
   When both `32` and `128/129` scale keys are present, `128/129` win.
 - The viewer draws shapes, not the game's sprites: blocks and spikes in a GD-like style
   (spikes facing the way the level flips and turns them), sawblades with spinning teeth,
