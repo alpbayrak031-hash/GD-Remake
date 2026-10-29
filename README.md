@@ -293,7 +293,7 @@ thrusters). The wave is drawn smaller than the others, as in GD.
 | cube, ball, robot, spider | particles kicked up while sliding and on landing; a fading ribbon **only** after an orb, pad, gravity change or teleport, gone the moment they land (the ball gets none from a gravity change) |
 | ship | a ribbon the whole time, exhaust particles, and a flame while the button is held |
 | UFO | a ribbon the whole time, particles underneath, and a short burst on every click |
-| wave | the solid zig-zag band with a pale core, kept for every corner until it scrolls away; it fades in 0.2 s when the wave ends |
+| wave | the solid zig-zag band with a pale core, kept for every corner until it scrolls away; it fades in 0.2 s when the wave ends. In dual mode the second wave leaves one too, in its lighter colour |
 | swing | a ribbon the whole time, a flame at the back and one on the side gravity pulls away from |
 | robot | a flame under the feet while a held jump is being boosted |
 | spider | a beam between the two ends of each teleport |

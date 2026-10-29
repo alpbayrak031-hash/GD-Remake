@@ -1006,22 +1006,34 @@ class Trails(unittest.TestCase):
     def test_wave_leaves_a_solid_trail_with_a_point_at_every_turn(self):
         # hold, release, hold: two changes of direction after the start
         _sim, fx, cv, _seen = self.run_level(mode=4, presses=[(5, 60), (100, 140)], ticks=160)
-        self.assertTrue(fx.wave_active)
+        self.assertTrue(fx.waves[0].active)
         # start, settling on the floor, up, down, sliding on the floor, up again
-        self.assertEqual(len(fx.wave_points), 6)
-        xs = [x for x, _y in fx.wave_points]
+        self.assertEqual(len(fx.waves[0].points), 6)
+        xs = [x for x, _y in fx.waves[0].points]
         self.assertEqual(xs, sorted(xs))
-        self.assertTrue(cv.shown([fx.it_wave, fx.it_core]))
+        self.assertTrue(cv.shown([fx.waves[0].it_band, fx.waves[0].it_core]))
         self.assertFalse(cv.shown(fx.it_seg), "the wave shows its solid trail, not the fading ribbon")
+
+    def test_in_dual_mode_both_waves_leave_a_trail(self):
+        dual = lambda b: b.add(286, 105, 45)        # noqa: E731  (a dual portal near the start)
+        sim, fx, cv, _seen = self.run_level(dual, mode=4, presses=[(80, 120)], ticks=170)
+        self.assertIsNotNone(sim.player2)
+        first, second = fx.waves
+        self.assertTrue(first.active and second.active)
+        self.assertGreaterEqual(len(second.points), 3, "the second wave turns too")
+        self.assertNotEqual(first.colour, second.colour, "in the second icon's lighter colour")
+        self.assertTrue(cv.shown([second.it_band, second.it_core]))
+        _sim, solo, _cv, _seen = self.run_level(mode=4, presses=[(80, 120)], ticks=170)
+        self.assertFalse(solo.waves[1].active, "no second trail without a second icon")
 
     def test_wave_trail_fades_out_after_the_wave_ends(self):
         from gd.effects import WAVE_FADE_TICKS
         build = lambda b: b.add(12, 400, 45)        # noqa: E731  (a cube portal on the floor)
         sim, fx, _cv, _seen = self.run_level(build, mode=4, ticks=330)
         self.assertEqual(int(sim.player.mode), 0)
-        self.assertFalse(fx.wave_active)
+        self.assertFalse(fx.waves[0].active)
         _sim, fx2, _cv, _seen = self.run_level(build, mode=4, ticks=330 + WAVE_FADE_TICKS + 5)
-        self.assertEqual(fx2.wave_points, [])
+        self.assertEqual(fx2.waves[0].points, [])
 
     def test_spider_teleport_draws_a_beam(self):
         _sim, fx, cv, _seen = self.run_level(mode=6, presses=[(30, 34)], ticks=40)
@@ -1044,7 +1056,7 @@ class Trails(unittest.TestCase):
     def test_reset_clears_everything(self):
         _sim, fx, _cv, _seen = self.run_level(mode=4, presses=[(5, 60)], ticks=80)
         fx.reset()
-        self.assertEqual((len(fx.history), fx.wave_points, fx.particles, fx.beam), (0, [], [], None))
+        self.assertEqual((len(fx.history), fx.waves[0].points, fx.particles, fx.beam), (0, [], [], None))
 
 
 class Autosave(Temp):

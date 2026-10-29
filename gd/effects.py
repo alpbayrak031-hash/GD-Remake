@@ -13,7 +13,8 @@ What is shown, and when, follows Geometry Dash:
                   startDashing -> deactivateStreak.)
   wave trail      the solid zig-zag band the wave leaves behind it, with a pale core.
                   It keeps every corner until the corner scrolls off screen, and fades
-                  in 0.2 s when the wave ends.  (HardStreak::updateStroke: the band is
+                  in 0.2 s when the wave ends; in dual mode the second icon leaves one
+                  too, in its lighter colour.  (HardStreak::updateStroke: the band is
                   6 x size x pulse wide, the white core 2 x size x pulse at 65 %;
                   deactivateStreak -> fadeOutStreak2(0.2).)
   fire            ship: exhaust while the button is held; robot: under the feet while a
@@ -63,14 +64,85 @@ def blend(a, b, t):
         int(round(int(a[i:i + 2], 16) + (int(b[i:i + 2], 16) - int(a[i:i + 2], 16)) * t)) for i in (1, 3, 5))
 
 
+class WaveTrail:
+    """The wave's solid zig-zag band behind one icon (dual mode has two of them)."""
+
+    def __init__(self, cv, hidden):
+        self.it_band = cv.create_polygon(0, 0, 0, 0, 0, 0, outline="", **hidden)
+        self.it_core = cv.create_polygon(0, 0, 0, 0, 0, 0, outline="", **hidden)
+        self.reset()
+
+    def reset(self):
+        self.points = []                                 # every corner so far
+        self.active = False
+        self.dir = 0
+        self.fade = None                                 # ticks left of the fade-out
+        self.size = 1.0
+        self.head = (0.0, 0.0)
+        self.colour = icons.MODE_COLORS[4]
+
+    def tick(self, q, colour):
+        """q: the icon (None when there is no second one)."""
+        if q is not None and q.mode == WAVE and not q.dead:
+            dy = q.y - q.last_y
+            direction = 0 if abs(dy) < 1e-6 else (1 if dy > 0 else -1)
+            if not self.active:
+                self.points = [(q.last_x, q.last_y)]
+                self.active, self.fade = True, None
+            elif direction != self.dir:
+                self.points.append((q.last_x, q.last_y))
+            self.dir = direction
+            self.head = (q.x, q.y)
+            self.size = MINI_SCALE if q.mini else 1.0
+            self.colour = colour
+        elif self.active:
+            self.active = False
+            self.fade = WAVE_FADE_TICKS
+        if self.fade is not None:
+            self.fade -= 1
+            if self.fade <= 0:
+                self.fade, self.points = None, []
+
+    def draw(self, fx, camera_left):
+        cv, z, bg = fx.cv, fx.z, fx.bg
+        pts = self.points
+        if not (pts and (self.active or self.fade is not None)):
+            fx._hide(self.it_band)
+            fx._hide(self.it_core)
+            return
+        while len(pts) > 2 and pts[1][0] < camera_left - 60:
+            pts.pop(0)                                   # corners that scrolled away (clearBehindXPos)
+        chain = pts + [self.head]
+        fade = 1.0 if self.fade is None else self.fade / float(WAVE_FADE_TICKS)
+        for item, width, colour in ((self.it_band, WAVE_OUTER, self.colour),
+                                    (self.it_core, WAVE_INNER, blend(self.colour, "#FFFFFF", 0.65))):
+            half = width * self.size * WAVE_PULSE / 2.0
+            top, bottom = [], []
+            for (x0, y0), (x1, y1) in zip(chain, chain[1:]):
+                if x1 - x0 < 1e-6:
+                    continue
+                # a band of constant thickness, cut vertically at each corner so the
+                # pieces meet in clean points
+                hv = half * math.hypot(x1 - x0, y1 - y0) / (x1 - x0)
+                top += [x0 * z, -(y0 + hv) * z, x1 * z, -(y1 + hv) * z]
+                bottom += [(x0, y0 - hv), (x1, y1 - hv)]
+            if len(top) >= 4:
+                flat = list(top)
+                for x, y in reversed(bottom):
+                    flat += [x * z, -y * z]
+                cv.coords(item, *flat)
+                fx._show(item, fill=blend(bg, colour, fade))
+            else:
+                fx._hide(item)
+
+
 class Effects:
     def __init__(self, cv, zoom, background, orb_colours=None):
         self.cv, self.z, self.bg = cv, zoom, background
         self.orb_colours = orb_colours or {}
         self.rng = random.Random(7)
         hidden = dict(state="hidden", tags="fx")
-        self.it_wave = cv.create_polygon(0, 0, 0, 0, 0, 0, outline="", **hidden)
-        self.it_core = cv.create_polygon(0, 0, 0, 0, 0, 0, outline="", **hidden)
+        self.waves = (WaveTrail(cv, hidden), WaveTrail(cv, hidden))     # the first icon's, the second's
         self.it_seg = [cv.create_line(0, 0, 0, 0, capstyle="butt", **hidden) for _ in range(SEGMENTS)]
         self.it_beam = cv.create_line(0, 0, 0, 0, capstyle="round", **hidden)
         self.it_flame = [(cv.create_polygon(0, 0, 0, 0, 0, 0, outline="", fill=FLAME, **hidden),
@@ -84,11 +156,8 @@ class Effects:
         """Forget everything (a new attempt, or a jump back to a checkpoint)."""
         self.history = deque(maxlen=TRAIL_TICKS + 1)     # (x, y, streak on?, width, colour)
         self.streak_on = False
-        self.wave_points = []
-        self.wave_active = False
-        self.wave_dir = 0
-        self.wave_fade = None                            # ticks left of the fade-out
-        self.wave_size = 1.0
+        for wave in self.waves:
+            wave.reset()
         self.particles = []                              # [x, y, vx, vy, life, max life, size, colour, gravity]
         self.flames = []                                 # (x, y, dx, dy, length, half width) per frame
         self.swing_in = 0.0
@@ -100,8 +169,6 @@ class Effects:
         self.tick_count = 0
         self.swing_flip = None
         self.prev_pos = None
-        self.wave_head = (0.0, 0.0)
-        self.wave_colour = icons.MODE_COLORS[4]
 
     # ------------------------------------------------------------------ per simulation step
     def tick(self, sim, pressed_now):
@@ -151,26 +218,11 @@ class Effects:
         width = TRAIL_WIDTH * scale * (0.8 if mode == WAVE else 1.0)
         self.history.append((ax, ay, ribbon, width, colour))
 
-        # --- wave trail: remember every corner
-        if mode == WAVE and not p.dead:
-            dy = p.y - p.last_y
-            direction = 0 if abs(dy) < 1e-6 else (1 if dy > 0 else -1)
-            if not self.wave_active:
-                self.wave_points = [(p.last_x, p.last_y)]
-                self.wave_active, self.wave_fade = True, None
-            elif direction != self.wave_dir:
-                self.wave_points.append((p.last_x, p.last_y))
-            self.wave_dir = direction
-            self.wave_head = (p.x, p.y)
-            self.wave_size = scale
-            self.wave_colour = colour
-        elif self.wave_active:
-            self.wave_active = False
-            self.wave_fade = WAVE_FADE_TICKS
-        if self.wave_fade is not None:
-            self.wave_fade -= 1
-            if self.wave_fade <= 0:
-                self.wave_fade, self.wave_points = None, []
+        # --- wave trails: remember every corner (the second icon's in its lighter colour,
+        # as gd/render_tk.py draws that icon)
+        q = sim.player2
+        self.waves[0].tick(p, colour)
+        self.waves[1].tick(q, blend(icons.MODE_COLORS[int(q.mode)], "#FFFFFF", 0.35) if q is not None else colour)
 
         # --- spider teleport beam
         if any("teleport" in e for e in events):
@@ -310,37 +362,9 @@ class Effects:
             cv.coords(item, x0 * z, -y0 * z, x1 * z, -y1 * z)
             self._show(item, fill=blend(bg, col, strength), width=max(1.0, w0 * z))
 
-        # --- wave trail
-        pts = self.wave_points
-        if pts and (self.wave_active or self.wave_fade is not None):
-            while len(pts) > 2 and pts[1][0] < camera_left - 60:
-                pts.pop(0)                               # corners that scrolled away (clearBehindXPos)
-            chain = pts + [self.wave_head]
-            fade = 1.0 if self.wave_fade is None else self.wave_fade / float(WAVE_FADE_TICKS)
-            for item, width, colour in (
-                    (self.it_wave, WAVE_OUTER, self.wave_colour),
-                    (self.it_core, WAVE_INNER, blend(self.wave_colour, "#FFFFFF", 0.65))):
-                half = width * self.wave_size * WAVE_PULSE / 2.0
-                top, bottom = [], []
-                for (x0, y0), (x1, y1) in zip(chain, chain[1:]):
-                    if x1 - x0 < 1e-6:
-                        continue
-                    # a band of constant thickness, cut vertically at each corner so the
-                    # pieces meet in clean points
-                    hv = half * math.hypot(x1 - x0, y1 - y0) / (x1 - x0)
-                    top += [x0 * z, -(y0 + hv) * z, x1 * z, -(y1 + hv) * z]
-                    bottom += [(x0, y0 - hv), (x1, y1 - hv)]
-                if len(top) >= 4:
-                    flat = list(top)
-                    for x, y in reversed(bottom):
-                        flat += [x * z, -y * z]
-                    cv.coords(item, *flat)
-                    self._show(item, fill=blend(bg, colour, fade))
-                else:
-                    self._hide(item)
-        else:
-            self._hide(self.it_wave)
-            self._hide(self.it_core)
+        # --- wave trails
+        for wave in self.waves:
+            wave.draw(self, camera_left)
 
         # --- spider beam
         if self.beam:

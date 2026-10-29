@@ -34,7 +34,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME = "GD Remake"
 BUNDLE_ID = "org.gdremake.GDRemake"
-VERSION = "1.6"
+VERSION = "1.7"
 MIN_MACOS = "11.0"                 # the oldest macOS python.org's own binaries run on (Apple Silicon)
 DIST = os.path.join(ROOT, "dist")
 PYVER = "%d.%d" % sys.version_info[:2]
