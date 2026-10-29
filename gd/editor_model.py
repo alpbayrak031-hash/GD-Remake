@@ -426,6 +426,37 @@ class LevelDocument:
         self._replace(objs, turned)
         return list(turned.values())
 
+    def flip(self, objs, axis, checkpoint=True):
+        """Mirror objects as a group, left to right (axis "x") or upside down ("y"), about the
+        middle of the grid cells they cover, as GD's editor flips a selection: each object
+        goes to the other side, its own flip (key 4 or 5) toggles and its rotation is
+        mirrored - so spikes, slopes and pads end up facing the mirrored way.  Returns the
+        new objects."""
+        objs = self.alive(objs)
+        if not objs:
+            return objs
+        if checkpoint:
+            self._checkpoint()
+        pos, key = (2, 4) if axis == "x" else (3, 5)
+        cells = [math.floor((o.x if axis == "x" else o.y) / GRID) for o in objs]
+        middle = (min(cells) + max(cells) + 1) * GRID / 2.0
+        flipped = {}
+        for o in objs:
+            raw = dict(o.raw)
+            raw[pos] = _fmt(round(2.0 * middle - (o.x if axis == "x" else o.y), 3))
+            if _num(raw, key):
+                del raw[key]
+            else:
+                raw[key] = "1"
+            rot = _fmt((-o.rot) % 360.0)
+            if rot == "0":
+                raw.pop(6, None)
+            else:
+                raw[6] = rot
+            flipped[o.uid] = EdObject(raw)
+        self._replace(objs, flipped)
+        return list(flipped.values())
+
     def set_values(self, objs, values, checkpoint=True):
         """Change level-string keys of objects: {key: text, or None to remove the key}.
         Returns the changed objects (new ones, as every edit makes)."""

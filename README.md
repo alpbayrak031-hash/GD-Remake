@@ -471,7 +471,7 @@ always says what the current tool does.
 | **E** | erase tool on/off |
 | **S** | select tool on/off: click an object, drag over empty space for a box; Shift + click adds an object or takes it out of the selection, Shift + box adds what it covers |
 | drag a selection, arrows | move the selection (snaps to the grid), nudge it one cell |
-| **R** (with a selection), Delete | turn the selection 90 degrees as a group, remove it |
+| **R**, **F** / **V** (with a selection), Delete | turn the selection 90 degrees as a group, flip it left-right / upside down as a group, remove it |
 | Cmd/Ctrl + C, V, D, A | copy, paste where the mouse is, duplicate next to it, select all |
 | Esc | deselect (again: back to building) |
 | **G** | grid size: 30, 15, 7.5 or 3.75 units (the button shows which) |

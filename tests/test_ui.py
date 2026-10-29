@@ -503,6 +503,26 @@ class EditorSelection(unittest.TestCase):
         d.redo()
         self.assertIn((1, 75.0, 45.0, 0.0), self.where(d))
 
+    def test_flip_mirrors_a_group_and_what_each_object_faces(self):
+        from gd.editor_model import LevelDocument
+        from gd.level import Level
+        d = LevelDocument()
+        spike = d.place(8, 45, 15)                        # pointing up, left end of the group
+        pad = d.place(67, 105, 2)                         # a blue pad on the floor, right end
+        turned = d.place(8, 75, 15, rot=90)               # pointing right, in the middle
+        before = self.where(d)
+        out = {o.id if o.rot == 0 else "turned": o for o in d.flip([spike, pad, turned], "x")}
+        self.assertEqual((out[8].x, out[67].x, out["turned"].x), (105.0, 45.0, 75.0), "ends swap, middle stays")
+        self.assertEqual(out[8].raw.get(4), "1")
+        self.assertEqual(out["turned"].rot, 270.0, "a spike pointing right now points left")
+        (down,) = d.flip([d.alive([out[67]])[0]], "y")
+        self.assertEqual(down.raw.get(5), "1")
+        phys = {o.id: o for o in Level(d.to_string()).objects}
+        self.assertTrue(phys[67].upside, "the flipped pad works from the ceiling side")
+        d.undo()
+        d.undo()
+        self.assertEqual(self.where(d), before)
+
     def test_turn_keeps_a_group_together(self):
         d = self.doc()
         turned = d.turn([self.a, self.b])
@@ -648,6 +668,17 @@ class EditorSelectTool(unittest.TestCase):
         self.click(105, 45, shift=True)
         self.assertEqual(self.chosen(), [225.0])
         self.assertEqual(len(self.ed.doc.objects), 3, "nothing was erased")
+
+    def test_f_and_v_flip_the_selection_not_the_brush(self):
+        self.mouse("<ButtonPress-1>", 80, 90, button=1)
+        self.mouse("<B1-Motion>", 190, 20)
+        self.mouse("<ButtonRelease-1>", 190, 20, button=1)
+        self.ed._flip("flip_x")
+        self.ed._flip("flip_y")
+        self.assertFalse(self.ed.flip_x or self.ed.flip_y, "the brush is untouched")
+        self.assertEqual(self.chosen(), [105.0, 165.0], "the pair mirrored onto itself")
+        self.assertEqual({(o.raw.get(4), o.raw.get(5)) for o in self.ed.selected}, {("1", "1")})
+        self.assertEqual(len(self.ed.doc.objects), 3)
 
     def test_shift_box_adds_to_the_selection(self):
         self.click(225, 45)

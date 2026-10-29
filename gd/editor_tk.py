@@ -56,7 +56,7 @@ HELP = """Building
   left click / drag        place the selected object
   right click / drag       erase   (or Shift + left - except with the Select tool - or the Erase tool: E)
   Alt / Option + click     pick the object under the cursor
-  R   F   V                rotate 90,  flip X,  flip Y
+  R   F   V                rotate 90,  flip X,  flip Y   (with a selection: the selection)
   1 - 9, 0                 choose a tile          Tab   next tab
   G                        grid size: 30, 15, 7.5, 3.75 units, then 30 again
   I                        properties of the selection (or what is under the mouse):
@@ -745,6 +745,10 @@ class Editor(Painter):
         self._draw_bar()
 
     def _flip(self, name):
+        if self.tool == "select" and self.selected:
+            self._set_selection(self.doc.flip(self.selected, "x" if name == "flip_x" else "y"))
+            self._sync_objects()
+            return
         setattr(self, name, not getattr(self, name))
         self._draw_bar()
 
@@ -777,7 +781,7 @@ class Editor(Painter):
         self._draw_selection()
         if self.tool == "select":
             n = len(self.selected)
-            self._say("%d object%s selected.   Drag to move, arrows nudge, R turns, Delete removes, "
+            self._say("%d object%s selected.   Drag to move, arrows nudge, R turns, F / V flip, Delete removes, "
                       "Cmd/Ctrl + C / V / D copy, paste, duplicate." % (n, "" if n == 1 else "s") if n else
                       "Selecting: click an object or drag a box around several.   ? lists what you can do with them.")
 
