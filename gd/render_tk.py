@@ -10,7 +10,7 @@ window of its own for `python3 main.py level.gmd`.
 Keys   Space / Up / W / click  jump (hold)        Esc or P  pause menu
        R  restart     Z / X  add / remove a practice checkpoint
        H  hitboxes    O  debug info    F  FPS counter    D  decoration    T  trail    N  single step
-       - / =  speed
+       C  click between frames (CBF)    - / =  speed
 """
 import math
 import sys
@@ -54,6 +54,9 @@ FPS_CAP = 240                        # frames a second at most: one per physics 
 CHUNK = 600.0                        # world units: level objects are drawn and dropped this many at a time
 VIEW_MARGIN = 360.0                  # ... and drawn this far beyond the screen's edges, so nothing pops in
 SAW_SPIN = -300.0                    # degrees a second the saws' teeth turn (clockwise) - purely visual, EST
+ORB_PULSE_HZ = 1.6                   # orbs' rings pulse this often (GD follows the music; EST)
+ORB_SPIN = 200.0                     # degrees a second a dash orb's arcs turn (EST)
+CHEVRON_SECONDS = 0.55               # how long a dash orb's chevron takes to run out (EST)
 BOUND_SLIDE = 10.0                   # how quickly a floor / ceiling slides into place (1/s; EST, by eye)
 DECO_PER_FRAME = 350                 # decoration shapes made per frame at most, so a busy chunk never stutters
 DECO_DIM = 0.3                       # how far decoration is mixed into the background: the gameplay stays in front
@@ -100,7 +103,7 @@ class Painter:
     zoom = 1.5
     _made = None
     _extra = ()                          # tags every new item also gets (draw_object's `tag`)
-    spin = None                          # a list that collects (teeth item, saw) to turn, or None (the editor)
+    spin = None                          # a list that collects (item, object, how it moves) to animate, or None (the editor)
     deco_bg = BG                         # what decoration is dimmed towards
     chan = {}                            # colour channel -> (r, g, b), opacity as colour triggers left it
     block_fill, block_line, block_inner = COL_SOLID_FILL, COL_SOLID, "#33456F"
@@ -215,6 +218,15 @@ class Painter:
     def deco_colour(self, rgb, alpha):
         return blend(self.deco_bg, _hex(rgb), min(1.0, alpha) * (1.0 - DECO_DIM))
 
+    def _chevron(self, x, y, way, t):
+        """A chevron `t` (0 to 1) of the way out from a dash orb's centre, pointing `way`."""
+        ux, uy = way
+        d, back, wing = 9.0 + 24.0 * t, 6.0, 6.5
+        z = self.zoom
+        bx, by = x + ux * (d - back), y + uy * (d - back)
+        return ((bx - uy * wing) * z, -(by + ux * wing) * z, (x + ux * d) * z, -(y + uy * d) * z,
+                (bx + uy * wing) * z, -(by - ux * wing) * z)
+
     @staticmethod
     def saw_points(x, y, r, angle):
         """A sawblade's outline: teeth whose tips reach 1.5 x the hitbox radius (the sprite
@@ -268,7 +280,7 @@ class Painter:
             teeth = self._poly(self.saw_points(o.x, o.y, r, 0.0), fill=self.hazard_fill, outline=self.hazard_line,
                                width=max(1, int(round(self.zoom))), tags="art")
             if self.spin is not None:
-                self.spin.append((teeth, o))
+                self.spin.append((teeth, o, "saw"))
             self._oval(o.x, o.y, r * 1.2, fill=blend(self.hazard_fill, "#000000", 0.35), outline=self.hazard_line,
                        width=max(1, int(round(self.zoom))), tags="art")
             self._oval(o.x, o.y, r * 0.78, fill="", outline=self.hazard_inner, width=max(1, int(round(self.zoom * 1.4))),
@@ -283,14 +295,35 @@ class Painter:
             self._poly(tri, fill=self.hazard_fill if hazard else self.block_fill,
                        outline=self.hazard_line if hazard else self.block_line, width=max(1, int(round(self.zoom))))
         elif k == O.ORB:
+            # a glow and a ring that pulse (GD pulses orbs to the music; here at a steady
+            # ORB_PULSE_HZ), the orb itself with a shine; a dash orb also has three arcs
+            # turning round it and chevrons running out the way it sends you
             col = ORB_COLORS.get(o.arg, "#ffffff")
-            self._oval(o.x, o.y, 17, fill="", outline=col, width=2, tags="art")
+            width = max(2, int(round(self.zoom * 1.4)))
+            animate = self.spin.append if self.spin is not None else (lambda entry: None)
+            glow = self._oval(o.x, o.y, 21, fill="", outline=blend(col, self.deco_bg, 0.62), width=width, tags="art")
+            ring = self._oval(o.x, o.y, 17, fill="", outline=col, width=width, tags="art")
+            animate((glow, o, ("pulse", 21.0, 2.2)))
+            animate((ring, o, ("pulse", 17.0, 1.1)))
             self._oval(o.x, o.y, 10, fill=col, outline="", tags="art")
+            self._oval(o.x - 3.5, o.y + 3.5, 3.2, fill=blend(col, "#FFFFFF", 0.7), outline="", tags="art")
             self._poly(self._box(o), fill="", outline=HIT_SPECIAL, dash=(2, 3), tags="hit")
             if o.arg in ("dash", "gravity_dash"):
-                tip = self._rot([(o.x + 27, o.y)], o.x, o.y, o.rot + (180 if o.flip_x else 0))[0]
-                self._track(self.cv.create_line(self._wx(o.x), self._wy(o.y), self._wx(tip[0]), self._wy(tip[1]),
-                                                **self._tags(dict(fill=col, width=2, arrow="last", tags="art"))))
+                tip = self._rot([(o.x + 1.0, o.y)], o.x, o.y, o.rot + (180 if o.flip_x else 0))[0]
+                way = (tip[0] - o.x, tip[1] - o.y)
+                r = 25.0
+                for j in range(3):
+                    arc = self._track(self.cv.create_arc(
+                        self._wx(o.x - r), self._wy(o.y + r), self._wx(o.x + r), self._wy(o.y - r),
+                        **self._tags(dict(start=j * 120.0, extent=64.0, style="arc", outline=col, width=width,
+                                          tags="art"))))
+                    animate((arc, o, ("arc", j * 120.0)))
+                for j in range(2):
+                    chevron = self._track(self.cv.create_line(
+                        *self._chevron(o.x, o.y, way, 0.5 * j),
+                        **self._tags(dict(fill=blend(col, "#FFFFFF", 0.35), width=width, capstyle="round",
+                                          joinstyle="round", tags="art"))))
+                    animate((chevron, o, ("chevron", way, 0.5 * j)))
         elif k == O.PAD:
             col = PAD_COLORS.get(o.arg, "#ffffff")
             # the pad itself is only 4-6 units tall: draw a chunkier base so it is easy to see
@@ -414,6 +447,8 @@ class GameView(Painter):
         self.show_debug = debug
         self.show_fps = settings.get("show_fps")      # remembered between levels and sessions
         self.show_deco = settings.get("show_deco")    # decoration (gd/deco_table.py), also remembered
+        self.cbf = settings.get("cbf")                # Click Between Frames (see _click_plan), also remembered
+        self._clicks = []                             # CBF: (time, button down) for each change since the last steps
         self.chan = {}                                # colour channels changed by colour triggers so far
         self.colour_fades = {}                        # channel -> (start tick, ticks, from rgb, to rgb, from a, to a)
         self.colour_next = 0                          # next colour trigger (level.colour_triggers) to pass
@@ -457,12 +492,13 @@ class GameView(Painter):
         self._states = inputs.iter_states() if inputs is not None else None
         self.w, self.h = 1120, 640
         self.last = time.perf_counter()
+        self.click_from = self.last                   # CBF: the moment the last frame's steps reached
 
         self.frame = tk.Frame(parent, bg=self.bg)
         self.cv = tk.Canvas(self.frame, bg=self.bg, highlightthickness=0, takefocus=1)
         self.cv.pack(fill="both", expand=True)
         self._build_static()
-        self.fx = Effects(self.cv, self.zoom, self.bg)        # trails and fire sit above the level, below the player
+        self.fx = Effects(self.cv, self.zoom, self.bg, ORB_COLORS)        # trails and fire sit above the level, below the player
         self._build_dynamic()
         self._apply_hitbox_visibility()
         self.frame_dt = 0.0
@@ -533,7 +569,7 @@ class GameView(Painter):
         self.cl_chunks = [_chunks(c.objects) for c in tr.clusters] if tr is not None else []
         self.cl_drawn = set()                         # (cluster, chunk) on the canvas
         self.cl_at = [(0.0, 0.0)] * len(self.cl_chunks)   # how far each cluster's items have been moved
-        self.saws = {}                                # chunk tag -> [(teeth item, saw, cluster or None)]
+        self.animated = {}                            # chunk tag -> [(item, object, how it moves, cluster or None)]
 
     def _cull(self, x0, x1):
         """Draw the chunks of the level that are on (or near) the screen and drop the rest;
@@ -550,13 +586,13 @@ class GameView(Painter):
                     for o in objs:
                         self.draw_object(o, tag)
                     if self.spin:
-                        self.saws[tag] = [(item, o, None) for item, o in self.spin]
+                        self.animated[tag] = [(item, o, how, None) for item, o, how in self.spin]
                     self.spin = None
                     drawn.add(i)
                     made.append(tag)
                 else:
                     cv.delete(tag)
-                    self.saws.pop(tag, None)
+                    self.animated.pop(tag, None)
                     drawn.discard(i)
         trig = self.sim.trig
         if trig is not None:
@@ -577,7 +613,7 @@ class GameView(Painter):
                             for o in objs:
                                 self.draw_object(o, (tag, "k%d" % k))
                             if self.spin:
-                                self.saws[tag] = [(item, o, k) for item, o in self.spin]
+                                self.animated[tag] = [(item, o, how, k) for item, o, how in self.spin]
                             self.spin = None
                             if at != (0.0, 0.0):
                                 cv.move(tag, at[0] * z, -at[1] * z)
@@ -585,7 +621,7 @@ class GameView(Painter):
                             made.append(tag)
                         else:
                             cv.delete(tag)
-                            self.saws.pop(tag, None)
+                            self.animated.pop(tag, None)
                             self.cl_drawn.discard(key)
         for tag in made:
             cv.tag_lower(tag, self.it_layer)
@@ -700,16 +736,29 @@ class GameView(Painter):
         if self.panel == "pause":
             self._show_panel("pause")
 
-    def _spin_saws(self, now):
+    def _animate(self, now):
+        """Saws turn, orbs pulse, dash orbs' arcs turn and chevrons run (all purely visual)."""
         angle = (now * SAW_SPIN) % 360.0
+        pulse = math.sin(now * 2.0 * math.pi * ORB_PULSE_HZ)
+        turn = (now * ORB_SPIN) % 360.0
+        run = (now / CHEVRON_SECONDS) % 1.0
         cv, z, at = self.cv, self.zoom, self.cl_at
-        for saws in self.saws.values():
-            for item, o, k in saws:
+        for entries in self.animated.values():
+            for item, o, how, k in entries:
                 dx, dy = at[k] if k is not None else (0.0, 0.0)
-                flat = []
-                for x, y in self.saw_points(o.x + dx, o.y + dy, o.radius, angle):
-                    flat += [x * z, -y * z]
-                cv.coords(item, *flat)
+                x, y = o.x + dx, o.y + dy
+                if how == "saw":
+                    flat = []
+                    for px, py in self.saw_points(x, y, o.radius, angle):
+                        flat += [px * z, -py * z]
+                    cv.coords(item, *flat)
+                elif how[0] == "pulse":
+                    r = how[1] + how[2] * pulse
+                    cv.coords(item, (x - r) * z, -(y + r) * z, (x + r) * z, -(y - r) * z)
+                elif how[0] == "arc":
+                    cv.itemconfigure(item, start=(turn + how[1]) % 360.0)
+                else:
+                    cv.coords(item, *self._chevron(x, y, how[1], (run + how[2]) % 1.0))
 
     def _build_dynamic(self):
         cv = self.cv
@@ -787,6 +836,8 @@ class GameView(Painter):
             self.toggle_fps()
         elif k == "d":
             self.toggle_deco()
+        elif k == "c":
+            self.toggle_cbf()
         elif k == "t":
             self._toggle("show_trail")
         elif k == "z":
@@ -818,17 +869,24 @@ class GameView(Painter):
         if self._pending_release is not None:      # X11 auto-repeat sends release+press pairs
             self.cv.after_cancel(self._pending_release)
             self._pending_release = None
-        self.key_down = True
+        self._button(True)
 
     def _release(self, _event=None):
         if sys.platform == "darwin" or sys.platform.startswith("win"):
-            self.key_down = False
+            self._button(False)
         else:
+            self._release_at = time.perf_counter()
             self._pending_release = self.cv.after(4, self._really_release)
 
     def _really_release(self):
         self._pending_release = None
-        self.key_down = False
+        self._button(False, self._release_at)
+
+    def _button(self, down, when=None):
+        if down != self.key_down:
+            self.key_down = down
+            if self.cbf:
+                self._clicks.append((time.perf_counter() if when is None else when, down))
 
     def _toggle(self, name):
         setattr(self, name, not getattr(self, name))
@@ -860,7 +918,7 @@ class GameView(Painter):
         cv.delete("panel")
         self.panel = kind
         left, top = cv.canvasx(0), cv.canvasy(0)
-        pw, ph = 380, (496 if kind == "pause" else 330)
+        pw, ph = 380, (546 if kind == "pause" else 330)
         x0, y0 = left + (self.w - pw) / 2.0, top + (self.h - ph) / 2.0
         ui.rounded(cv, x0 - 3, y0 - 3, x0 + pw + 3, y0 + ph + 3, 20, fill="#05070C", outline="", tags="panel")
         ui.rounded(cv, x0, y0, x0 + pw, y0 + ph, 18, fill=ui.PANEL, outline=ui.LINE, tags="panel")
@@ -885,7 +943,8 @@ class GameView(Painter):
             button(4, "Debug info: %s" % on(self.show_debug), lambda: self._panel_toggle("show_debug"), key="O")
             button(5, "FPS counter: %s" % on(self.show_fps), self.toggle_fps, key="F")
             button(6, "Decoration: %s" % on(self.show_deco), self.toggle_deco, key="D")
-            button(7, "Exit level", self.exit, "danger", "Q")
+            button(7, "Click between frames: %s" % on(self.cbf), self.toggle_cbf, key="C")
+            button(8, "Exit level", self.exit, "danger", "Q")
         else:
             title = "Practice complete!" if self.practice else "Level complete!"
             lines = [("Time", "%.2f s" % sim.time), ("Attempts", str(self.attempt)), ("Jumps", str(self.jumps))]
@@ -902,6 +961,14 @@ class GameView(Painter):
             ui.Button(cv, x0 + 30, y0 + ph - 66, pw - 60, 46, "Continue", self.exit, "primary", 15, "Enter",
                       tags=("panel",))
         cv.tag_raise("panel")
+
+    def toggle_cbf(self):
+        self.cbf = not self.cbf
+        settings.put("cbf", self.cbf)
+        self._clicks = []
+        self._flash("Click between frames %s" % ("on" if self.cbf else "off"))
+        if self.panel == "pause":
+            self._show_panel("pause")
 
     def toggle_fps(self):
         self.show_fps = not self.show_fps
@@ -993,7 +1060,7 @@ class GameView(Painter):
         if self.replay is not None:
             self._states = self.replay.iter_states()
 
-    def _advance(self):
+    def _advance(self, pressed=None, at=None):
         sim = self.sim
         if sim.dead or sim.finished:
             return
@@ -1001,13 +1068,16 @@ class GameView(Painter):
             self._counted = True
             if self.progress and self.key:
                 self.progress.attempt(self.key)
-        pressed = next(self._states) if self._states is not None else self.key_down
+        if self._states is not None:
+            pressed = next(self._states)
+        elif pressed is None:
+            pressed = self.key_down
         clicked = pressed and not sim.button
         if pressed != sim.button:
             self.recorded.append((sim.tick, pressed))
             if pressed:
                 self.jumps += 1
-        sim.step(pressed)
+        sim.step(pressed, at)
         self.fx.tick(sim, clicked)
         self.unsaved_ticks += 1
         p = sim.player
@@ -1022,6 +1092,36 @@ class GameView(Painter):
             self._on_death()
         elif sim.finished:
             self._on_complete()
+
+    def _click_plan(self, steps, now):
+        """Click Between Frames, as syzzi's CBF mod does it (src/main.cpp, buildStepQueue): the
+        time since the last frame's steps is shared out evenly among this frame's steps, and
+        each button change lands on the step it happened in, that far into it - instead of
+        every change waiting for the start of the frame.  Returns (button, at) per step.
+
+        Clicks are timed when Tk hands them over: at once while the game waits for the next
+        frame, but only after drawing finishes when they come during it (the mod reads the
+        keyboard on a thread of its own, which Python can't on macOS without asking for
+        Input Monitoring).  One change per step: a second one in the same step goes on the next."""
+        start, self.click_from = self.click_from, now
+        span = max(now - start, 1e-9) / steps
+        state, plan = self.sim.button, []
+        for i in range(steps):
+            last = i == steps - 1
+            at = None
+            while self._clicks and (last or self._clicks[0][0] < start + span * (i + 1)):
+                t, down = self._clicks[0]
+                if down == state:
+                    self._clicks.pop(0)                # changes nothing
+                    continue
+                if at is not None:
+                    break                              # one change per step
+                self._clicks.pop(0)
+                state, at = down, min(max((t - start) / span - i, 0.0), 1.0)
+            if at is None and not self._clicks and state != self.key_down:
+                state = self.key_down                  # changed without a click (pause, restart): at the step's start
+            plan.append((state, at))
+        return plan
 
     def _percent(self):
         return max(0.0, min(100.0, 100.0 * self.sim.player.x / self.sim.level.end_x))
@@ -1076,11 +1176,20 @@ class GameView(Painter):
             self.acc += min(dt, 0.1) * self.rate
             n = 0
             while self.acc >= STEP and n < 40:
-                self._advance()
                 self.acc -= STEP
                 n += 1
             if n == 40:
                 self.acc = 0.0
+            if self.cbf and self._states is None:
+                if n:                                  # (no steps: the clicks wait for the next frame)
+                    for pressed, at in self._click_plan(n, now):
+                        self._advance(pressed, at)
+            else:
+                self._clicks = []
+                for _ in range(n):
+                    self._advance()
+        else:
+            self.click_from, self._clicks = now, []
         if sim.dead and self.panel is None:
             if self.dead_since is None:
                 self.dead_since = now
@@ -1143,6 +1252,17 @@ class GameView(Painter):
             for item in items:
                 cv.itemconfigure(item, state="normal")
 
+    @staticmethod
+    def _pose(p):
+        """What the robot's or spider's legs are doing (icons.leg_pose)."""
+        mode = int(p.mode)
+        if mode not in icons.RUN_CYCLE or p.dead:
+            return None
+        if p.on_ground:
+            return ("run", p.x / (icons.RUN_CYCLE[mode] * (C.MINI_SCALE if p.mini else 1.0)))
+        rising = (p.y - p.last_y) * (-1.0 if p.upside_down else 1.0) > 0.0
+        return ("jump" if rising else "fall", 0.0)
+
     def _draw_second(self, q, z):
         """Dual mode: the second icon (and its two boxes when hitboxes are shown)."""
         cv = self.cv
@@ -1158,7 +1278,7 @@ class GameView(Painter):
                 self.sprite2.destroy()
             self.sprite2 = icons.IconSprite(cv, mode)
         self.sprite2.place(self._wx(q.x), self._wy(q.y), 15.0 * (C.MINI_SCALE if q.mini else 1.0) * z,
-                           q.rotation, q.upside_down)
+                           q.rotation, q.upside_down, self._pose(q))
         self.sprite2.set_colour("#FF4D4D" if q.dead else blend(icons.MODE_COLORS[mode], "#FFFFFF", 0.35))
         cv.delete("p2hit")
         if self.show_hit:
@@ -1186,8 +1306,8 @@ class GameView(Painter):
             left, top = cv.canvasx(0), cv.canvasy(0)
         self._colours_step()
         self._cull(left / z - VIEW_MARGIN, (left + w) / z + VIEW_MARGIN)
-        if self.saws:
-            self._spin_saws(now)
+        if self.animated:
+            self._animate(now)
 
         self._draw_bounds(p.x - 2000, p.x + 3000, -top / z)
         for uid in sim.destroyed:
@@ -1202,7 +1322,7 @@ class GameView(Painter):
                 self.sprite.destroy()
             self.sprite = icons.IconSprite(cv, mode)
         visual = 15.0 * (C.MINI_SCALE if p.mini else 1.0) * z
-        self.sprite.place(self._wx(p.x), self._wy(p.y), visual, p.rotation, p.upside_down)
+        self.sprite.place(self._wx(p.x), self._wy(p.y), visual, p.rotation, p.upside_down, self._pose(p))
         self.sprite.set_colour("#FF4D4D" if p.dead else icons.MODE_COLORS[mode])
         if self.show_hit:
             minx, maxx, miny, maxy = p.outer_rect()

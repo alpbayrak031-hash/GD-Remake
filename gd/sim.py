@@ -133,32 +133,51 @@ class Simulation:
         return self.tick / C.TPS
 
     # ------------------------------------------------------------------ stepping
-    def step(self, pressed):
-        """Advance exactly one 1/240 s step with the jump button up or down."""
+    def step(self, pressed, at=None):
+        """Advance exactly one 1/240 s step with the jump button up or down.
+
+        at: Click Between Frames - how far into this step (0 to 1) the button changed.  As in
+        syzzi's CBF mod (src/main.cpp, its PlayerObject::update hook), the step is split there
+        for an icon that is on the ground, touching an orb, dashing or flying: it moves up to
+        that moment with the old button, collides, gets the change and moves the rest of the
+        way.  Any other icon (a cube in mid-air, say) gets the change at the start of the
+        step, which is what the mod does too."""
         p = self.player
         if p.dead or self.finished:
             return
         pressed = bool(pressed)
         changed = pressed != self.button
         self.button = pressed
+        split = changed and at is not None and 0.0 < at < 1.0
         solo = self.player2 is None
         for q in (p, self.player2):              # in dual mode one button drives both icons
             if q is None:
                 continue
-            if changed:
-                if pressed:
-                    q.push_button()
-                else:
-                    q.release_button()
-            q.update(C.DT)
-            self._collide(q)
+            rest = C.DT
+            if split and (q.on_ground or q.is_dashing or q.mode in FLYING or self._touching_orb(q)):
+                x0, y0 = q.x, q.y
+                q.update(C.DT * at)
+                self._collide(q)
+                if not q.dead:
+                    if self.visual or self._angled:
+                        q.update_rotation(C.DT * at)
+                    self._change(q, pressed)
+                    rest = C.DT * (1.0 - at)
+                    q.update(rest)
+                    self._collide(q)
+                q.last_x, q.last_y = x0, y0          # where the whole step started (the mod does this too)
+            else:
+                if changed:
+                    self._change(q, pressed)
+                q.update(C.DT)
+                self._collide(q)
             if solo and q is p and self.player2 is not None:
                 # the second icon appeared during this step: what the first one touched in the
                 # same step (often a mode portal stacked on the dual portal) counts as passed
                 self.player2.used = self.player2.used | p.used
             if not q.dead:
                 if self.visual or self._angled:      # the angle only matters next to angled objects
-                    q.update_rotation(C.DT)
+                    q.update_rotation(rest)
             elif q is not p:                     # losing either icon ends the attempt
                 p.die("the second icon: %s" % q.death_cause)
                 break
@@ -169,6 +188,18 @@ class Simulation:
         self.tick += 1
         if not p.dead and p.x >= self.level.end_x:
             self.finished = True
+
+    @staticmethod
+    def _change(q, pressed):
+        if pressed:
+            q.push_button()
+        else:
+            q.release_button()
+
+    def _touching_orb(self, q):
+        minx, maxx, miny, maxy = q.x - q.half_w, q.x + q.half_w, q.y - q.half_h, q.y + q.half_h
+        return any(o.kind == O.ORB and rects_touch(minx, maxx, miny, maxy, o.minx, o.maxx, o.miny, o.maxy)
+                   for o in self.query(minx, maxx, miny, maxy))
 
     def run(self, inputs, max_ticks=None, trace=None):
         """Play an InputSequence until death, the end of the level or max_ticks."""

@@ -307,6 +307,101 @@ class GameViewDrawing(unittest.TestCase):
         self.assertEqual(v.cv.itemcget(band, "state"), "hidden", "a restart takes it away at once")
 
 
+class Animations(unittest.TestCase):
+    def test_robot_feet_on_the_ground_keep_pace_with_it(self):
+        import math
+        a = icons.leg_pose(icons.ROBOT, ("run", 0.0))
+        b = icons.leg_pose(icons.ROBOT, ("run", 0.1))
+        for legs in (a, b):
+            for hip, knee, foot, _toe in legs.values():
+                self.assertAlmostEqual(math.dist(hip, knee), 0.52, places=6, msg="the thigh keeps its length")
+                self.assertAlmostEqual(math.dist(knee, foot), 0.52, places=6, msg="so does the shin")
+        foot_a, foot_b = a[0][2], b[0][2]
+        self.assertEqual(foot_a[1], foot_b[1], "a planted foot stays on the floor ...")
+        travelled = 0.1 * icons.RUN_CYCLE[icons.ROBOT] / 15.0       # world units -> icon half-widths
+        self.assertAlmostEqual(foot_a[0] - foot_b[0], travelled, places=6, msg="... and moves back with the ground")
+
+    def test_air_poses_differ_and_other_icons_have_no_legs(self):
+        self.assertNotEqual(icons.leg_pose(icons.ROBOT, ("jump", 0)), icons.leg_pose(icons.ROBOT, ("fall", 0)))
+        self.assertEqual(len(icons.leg_pose(icons.SPIDER, ("run", 0.3))), 4)
+        self.assertIsNone(icons.leg_pose(icons.CUBE, ("run", 0.3)))
+
+    def test_orbs_pulse_and_dash_orbs_turn(self):
+        import tkinter as tk
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest("no display: %s" % exc)
+        self.addCleanup(root.destroy)
+        from gd.render_tk import GameView
+        from gd.sim import Simulation
+        b = LevelBuilder()
+        b.add(36, 75, 45)
+        b.add(1704, 135, 45)
+        v = GameView(root, Simulation(b.level()))
+        v.frame.pack(fill="both", expand=True)
+        root.update_idletasks()
+        v._draw(0.0)
+        hows = [how for entries in v.animated.values() for _item, _o, how, _k in entries]
+        self.assertEqual(sum(1 for h in hows if h[0] == "pulse"), 4, "glow and ring of both orbs")
+        self.assertEqual(sum(1 for h in hows if h[0] == "arc"), 3)
+        self.assertEqual(sum(1 for h in hows if h[0] == "chevron"), 2)
+        ring = next(item for entries in v.animated.values() for item, _o, how, _k in entries if how[0] == "pulse")
+        before = v.cv.coords(ring)
+        v._draw(0.15)
+        self.assertNotEqual(v.cv.coords(ring), before)
+
+
+class ClickPlan(unittest.TestCase):
+    """CBF in the game view: when each click lands among a frame's steps."""
+
+    def view(self):
+        from gd.render_tk import GameView
+        from gd.sim import Simulation
+        v = GameView.__new__(GameView)                  # only the bits _click_plan uses
+        v.sim = Simulation(LevelBuilder().level())
+        v.click_from, v._clicks, v.key_down = 10.0, [], False
+        return v
+
+    def test_clicks_land_on_their_step_and_that_far_into_it(self):
+        v = self.view()
+        v._clicks = [(10.0 + 0.0125, True), (10.0 + 0.0310, False)]    # frame of 4 steps of 10 ms
+        v.key_down = False
+        plan = v._click_plan(4, 10.040)
+        self.assertEqual([s for s, _ in plan], [False, True, True, False])
+        self.assertIsNone(plan[0][1])
+        self.assertAlmostEqual(plan[1][1], 0.25)
+        self.assertIsNone(plan[2][1])
+        self.assertAlmostEqual(plan[3][1], 0.10)
+        self.assertEqual(v.click_from, 10.040)
+        self.assertEqual(v._clicks, [])
+
+    def test_a_tap_inside_one_step_is_not_lost(self):
+        v = self.view()
+        v._clicks = [(10.002, True), (10.004, False)]
+        plan = v._click_plan(2, 10.020)
+        self.assertEqual([s for s, _ in plan], [True, False], "the release waits for the next step")
+        self.assertEqual(plan[1][1], 0.0)
+
+    def test_a_click_from_before_the_frame_lands_at_the_start(self):
+        v = self.view()
+        v._clicks = [(9.5, True)]
+        v.key_down = True
+        self.assertEqual(v._click_plan(1, 10.004), [(True, 0.0)])
+
+    def test_a_change_without_a_click_still_happens(self):
+        v = self.view()
+        v.key_down = True                                # held through a restart: no click was seen
+        self.assertEqual(v._click_plan(2, 10.008), [(True, None), (True, None)])
+
+    def test_the_setting_is_remembered_and_in_the_pause_menu(self):
+        from gd import settings
+        self.assertIs(settings.DEFAULTS["cbf"], False)
+        import gd.render_tk as R
+        import inspect
+        self.assertIn("Click between frames", inspect.getsource(R.GameView._show_panel))
+
+
 class FpsCounter(unittest.TestCase):
     def feed(self, durations, start=100.0):
         from gd.fps import FrameStats
@@ -496,6 +591,70 @@ class EditorSelection(unittest.TestCase):
             for oid, label in items:
                 self.assertIn(oid, O.OBJECTS, label)
                 self.assertIsNotNone(EdObject({1: str(oid), 2: "15", 3: "15"}).phys, label)
+
+
+class EditorSelectTool(unittest.TestCase):
+    """The Select tool with the mouse, in a real editor."""
+
+    def setUp(self):
+        import tkinter as tk
+        import types
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest("no display: %s" % exc)
+        self.addCleanup(self.root.destroy)
+        from gd import editor_tk
+        host = types.SimpleNamespace(play_level=lambda *a, **k: None, editor_closed=lambda: None, quit=lambda: None)
+        self.root.geometry("1320x820")
+        self.ed = ed = editor_tk.Editor(self.root, host)
+        self.addCleanup(lambda: setattr(ed.doc, "dirty", False))      # nothing to save from a test
+        ed.frame.pack(fill="both", expand=True)                        # Editor.start without the autosave timer
+        self.root.update()
+        ed.refresh_all()
+        self.a, self.b, self.c = ed.doc.place(1, 105, 45), ed.doc.place(1, 165, 45), ed.doc.place(1, 225, 45)
+        ed._sync_objects()
+        ed._set_tool("select")
+        self.root.update()
+
+    def screen(self, x, y):
+        ed = self.ed
+        return int(x * ed.zoom - ed.left), int(-y * ed.zoom - ed.top)
+
+    def mouse(self, kind, x, y, shift=False, **kw):
+        sx, sy = self.screen(x, y)
+        state = (1 if shift else 0) | (0x100 if kind == "<B1-Motion>" else 0)   # a drag: button 1 is held
+        self.ed.cv.event_generate(kind, x=sx, y=sy, state=state, **kw)
+        self.root.update()
+
+    def click(self, x, y, shift=False):
+        self.mouse("<ButtonPress-1>", x, y, shift, button=1)
+        self.mouse("<ButtonRelease-1>", x, y, shift, button=1)
+
+    def chosen(self):
+        return sorted(o.x for o in self.ed.selected)
+
+    def test_dragging_a_box_selects_what_it_covers(self):
+        self.mouse("<ButtonPress-1>", 80, 90, button=1)
+        self.mouse("<B1-Motion>", 140, 60)
+        self.mouse("<B1-Motion>", 190, 20)
+        self.mouse("<ButtonRelease-1>", 190, 20, button=1)
+        self.assertEqual(self.chosen(), [105.0, 165.0])
+
+    def test_shift_click_adds_and_takes_out_and_never_erases(self):
+        self.click(105, 45)
+        self.click(225, 45, shift=True)
+        self.assertEqual(self.chosen(), [105.0, 225.0])
+        self.click(105, 45, shift=True)
+        self.assertEqual(self.chosen(), [225.0])
+        self.assertEqual(len(self.ed.doc.objects), 3, "nothing was erased")
+
+    def test_shift_box_adds_to_the_selection(self):
+        self.click(225, 45)
+        self.mouse("<ButtonPress-1>", 80, 90, shift=True, button=1)
+        self.mouse("<B1-Motion>", 130, 20, shift=True)
+        self.mouse("<ButtonRelease-1>", 130, 20, shift=True, button=1)
+        self.assertEqual(self.chosen(), [105.0, 225.0])
 
 
 class EditorTriggersAndDecoration(unittest.TestCase):
@@ -724,7 +883,7 @@ class FakeCanvas:
     def create_polygon(self, *coords, **kw):
         return self._new(**kw)
 
-    create_line = create_rectangle = create_polygon
+    create_line = create_rectangle = create_oval = create_polygon
 
     def itemconfigure(self, item, **kw):
         self.items[item].update(kw)
@@ -748,7 +907,8 @@ class Trails(unittest.TestCase):
             build(b)
         sim = Simulation(b.level())
         cv = FakeCanvas()
-        fx = Effects(cv, 1.5, "#101010")
+        from gd.render_tk import ORB_COLORS
+        fx = Effects(cv, 1.5, "#101010", ORB_COLORS)
         seen = []
         for t in range(ticks):
             pressed = any(a <= t < z for a, z in presses)
@@ -784,6 +944,14 @@ class Trails(unittest.TestCase):
             b.add(36, 345, 75)                      # a yellow orb on the arc of the first jump
         _sim, _fx, _cv, seen = self.run_level(build, presses=[(190, 196), (236, 242)], ticks=330)
         self.assertTrue(any(on for _t, on, _g, _m in seen))
+
+    def test_an_orb_sends_out_a_ring_from_where_it_is(self):
+        def build(b):
+            b.add(36, 345, 75)
+        sim, fx, _cv, _seen = self.run_level(build, presses=[(190, 196), (236, 242)], ticks=250)
+        self.assertIn("yellow orb", [text for _t, text in sim.log])
+        (ring,) = fx.rings
+        self.assertEqual(ring[:3], [345.0, 75.0, "#FFE14D"])
 
     def test_flying_modes_always_trail(self):
         for mode in (1, 3, 7):

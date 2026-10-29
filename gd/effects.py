@@ -19,7 +19,9 @@ What is shown, and when, follows Geometry Dash:
   fire            ship: exhaust while the button is held; robot: under the feet while a
                   held jump is being boosted; swing: one flame at the back and one on
                   the side gravity pulls away from (updateSwingFire); dash orb: a cone
-                  behind the player.
+                  behind the player, flickering, with sparks thrown back off it.
+  orb ring        hitting an orb sends a ring out from it that widens and fades
+                  (GD's circle wave on ringJump; its size and length here are EST).
   particles       squares kicked up while a ground mode slides, a burst on landing,
                   exhaust from ship and UFO, and a 0.12 s burst under the UFO on each
                   click (playBurstEffect).
@@ -48,6 +50,8 @@ WAVE_FADE_TICKS = int(0.2 * TPS)  # deactivateStreak -> fadeOutStreak2(0.2)
 UFO_BURST_TICKS = int(0.12 * TPS)  # playBurstEffect
 BEAM_TICKS = int(0.25 * TPS)      # EST
 MAX_PARTICLES = 56
+RING_TICKS = int(0.32 * TPS)      # EST: how long an orb's ring takes to widen and fade
+RING_FROM, RING_TO = 14.0, 46.0   # EST: its radius, units
 FLAME = "#FFB02E"
 FLAME_CORE = "#FFF3B0"
 
@@ -60,8 +64,9 @@ def blend(a, b, t):
 
 
 class Effects:
-    def __init__(self, cv, zoom, background):
+    def __init__(self, cv, zoom, background, orb_colours=None):
         self.cv, self.z, self.bg = cv, zoom, background
+        self.orb_colours = orb_colours or {}
         self.rng = random.Random(7)
         hidden = dict(state="hidden", tags="fx")
         self.it_wave = cv.create_polygon(0, 0, 0, 0, 0, 0, outline="", **hidden)
@@ -71,6 +76,7 @@ class Effects:
         self.it_flame = [(cv.create_polygon(0, 0, 0, 0, 0, 0, outline="", fill=FLAME, **hidden),
                           cv.create_polygon(0, 0, 0, 0, 0, 0, outline="", fill=FLAME_CORE, **hidden)) for _ in range(3)]
         self.it_part = [cv.create_rectangle(0, 0, 0, 0, outline="", **hidden) for _ in range(MAX_PARTICLES)]
+        self.it_ring = [cv.create_oval(0, 0, 0, 0, fill="", **hidden) for _ in range(3)]
         self.shown = {}                                  # item -> its options as last set (None: hidden)
         self.reset()
 
@@ -87,6 +93,7 @@ class Effects:
         self.flames = []                                 # (x, y, dx, dy, length, half width) per frame
         self.swing_in = 0.0
         self.beam = None                                 # [x0, y0, x1, y1, ticks left, colour]
+        self.rings = []                                  # orb rings: [x, y, colour, ticks left]
         self.ufo_burst = 0
         self.log_seen = 0
         self.was_grounded = True
@@ -177,6 +184,17 @@ class Effects:
             if self.beam[4] <= 0:
                 self.beam = None
 
+        # --- a ring from each orb hit this step
+        for e in events:
+            if e.endswith(" orb"):
+                o = self._orb_near(sim)
+                x, y = (o.x, o.y) if o is not None else (p.x, p.y)
+                self.rings = self.rings[-(len(self.it_ring) - 1):] + [[x, y, self.orb_colours.get(e[:-4], "#FFFFFF"),
+                                                                       RING_TICKS]]
+        for ring in self.rings:
+            ring[3] -= 1
+        self.rings = [ring for ring in self.rings if ring[3] > 0]
+
         # --- particles
         rnd = self.rng.uniform
         grounded = p.can_jump and not p.dead
@@ -229,11 +247,30 @@ class Effects:
                 flames.append((fx, fy, tx - fx, ty - fy, 16.0 * scale * self.swing_in, 4.5 * scale))
             if p.is_dashing:
                 n = math.hypot(1.0, p.dash_y)
-                flames.append((p.x - 8.0 / n, p.y - 8.0 * p.dash_y / n, -1.0, -p.dash_y, 26.0 * scale, 8.0 * scale))
+                flames.append((p.x - 8.0 / n, p.y - 8.0 * p.dash_y / n, -1.0, -p.dash_y, 30.0 * scale, 9.0 * scale))
+                if self.tick_count % 2 == 0:                # sparks thrown back off the flame
+                    back = self.rng.uniform(260, 420)
+                    side = self.rng.uniform(-60, 60)
+                    self._emit(p.x - 14.0 / n * scale, p.y - 14.0 * p.dash_y / n * scale,
+                               -back / n - side * p.dash_y / n, -back * p.dash_y / n + side / n, 0.22,
+                               self.rng.uniform(2.0, 3.6), FLAME_CORE if self.tick_count % 4 else FLAME, 0.0)
         if mode != SWING:
             self.swing_in = 0.0
         self.flames = flames
         self.swing_flip = p.upside_down
+
+    @staticmethod
+    def _orb_near(sim):
+        """The orb an icon is touching (the one that just fired), or None."""
+        best, far = None, 40.0 * 40.0
+        for q in (sim.player, sim.player2):
+            if q is None:
+                continue
+            for o in sim.query(q.x - 30.0, q.x + 30.0, q.y - 30.0, q.y + 30.0):
+                d = (o.x - q.x) ** 2 + (o.y - q.y) ** 2
+                if o.kind == "orb" and d < far:
+                    best, far = o, d
+        return best
 
     def _emit(self, x, y, vx, vy, life, size, colour, gravity):
         if len(self.particles) < MAX_PARTICLES:
@@ -330,6 +367,18 @@ class Effects:
                 tx, ty = x + dx * length * k, y + dy * length * k
                 cv.coords(item, (x + px) * z, -(y + py) * z, tx * z, -ty * z, (x - px) * z, -(y - py) * z)
                 self._show(item)
+
+        # --- orb rings
+        for i, item in enumerate(self.it_ring):
+            if i >= len(self.rings):
+                self._hide(item)
+                continue
+            x, y, colour, left = self.rings[i]
+            t = 1.0 - left / float(RING_TICKS)                 # 0 -> 1 as it widens
+            ease = 1.0 - (1.0 - t) ** 3
+            r = RING_FROM + (RING_TO - RING_FROM) * ease
+            cv.coords(item, (x - r) * z, -(y + r) * z, (x + r) * z, -(y - r) * z)
+            self._show(item, outline=blend(bg, colour, 1.0 - t), width=max(1.0, round(4.0 * (1.0 - t) * z, 1)))
 
         # --- particles
         alive = []

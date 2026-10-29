@@ -10,6 +10,12 @@ The silhouettes are deliberately different so a mode is recognisable at a glance
 even when small: square (cube), rocket with a rider (ship), spoked wheel (ball),
 dome on a saucer (ufo), arrowhead (wave), head on two legs (robot), flat body on
 four legs (spider), ball with three thrusters (swing).
+
+The robot and the spider move their legs (leg_pose): running, the feet step along the
+ground at the speed it passes under them; in the air the legs take a jump pose while
+rising and a fall pose while dropping, as GD's robot and spider animations do.  The
+poses and the stride are my own (EST); GD's animation frames are sprites that are not
+part of this project.
 """
 import math
 
@@ -116,6 +122,78 @@ ICONS = {
 }
 
 
+# ------------------------------------------------------------------ walking legs
+# world units the icon travels during one full step cycle (both feet once), at size 1:
+# chosen so a foot on the ground moves back exactly as fast as the ground passes (EST)
+RUN_CYCLE = {ROBOT: 25.2, SPIDER: 24.0}
+_ROBOT_HIPS = (-0.22, 0.22)               # back leg, front leg (they cross while running)
+_ROBOT_HIP_Y, _ROBOT_THIGH, _ROBOT_SHIN = -0.1, 0.52, 0.52
+_ROBOT_STRIDE, _ROBOT_LIFT, _FLOOR = 0.42, 0.34, -0.98
+# spider: (hip, knee, foot) of each leg as drawn standing; legs 0 and 2 step together, 1 and 3
+_SPIDER_REST = [[(-0.35, 0.02), (-0.98, 0.58), (-1.32, -0.98)], [(-0.22, -0.08), (-0.6, 0.26), (-0.78, -0.98)],
+                [(0.22, -0.08), (0.6, 0.26), (0.78, -0.98)], [(0.35, 0.02), (0.98, 0.58), (1.32, -0.98)]]
+
+
+def _knee(hip, foot, upper, lower, side):
+    """Where a two-part leg bends to reach `foot` from `hip` (side +1 / -1 picks the bend)."""
+    hx, hy = hip
+    dx, dy = foot[0] - hx, foot[1] - hy
+    d = math.hypot(dx, dy)
+    reach = upper + lower - 1e-6
+    if d > reach:                                  # out of reach: a straight leg towards the foot
+        dx, dy, d = dx * reach / d, dy * reach / d, reach
+    d = max(d, 1e-6)
+    a = (upper * upper - lower * lower + d * d) / (2 * d)
+    h = math.sqrt(max(0.0, upper * upper - a * a))
+    ux, uy = dx / d, dy / d
+    return hx + a * ux - side * h * uy, hy + a * uy + side * h * ux
+
+
+def _step(phase, stride, lift):
+    """A foot's offset (x, y) over one cycle: half the time on the ground moving back,
+    half in the air swinging forward."""
+    phase %= 1.0
+    if phase < 0.5:
+        return stride * (1.0 - 4.0 * phase), 0.0
+    s = (phase - 0.5) * 2.0
+    return stride * (-1.0 + 2.0 * s), lift * math.sin(math.pi * s)
+
+
+def leg_pose(mode, pose):
+    """{index in ICONS[mode]: points} for the legs in `pose`: ("run", cycles travelled),
+    ("jump", 0) or ("fall", 0).  None for icons without legs."""
+    kind, phase = pose
+    out = {}
+    if mode == ROBOT:
+        for i, hx in enumerate(_ROBOT_HIPS):
+            hip = (hx, _ROBOT_HIP_Y)
+            if kind == "run":
+                ox, oy = _step(phase + 0.5 * i, _ROBOT_STRIDE, _ROBOT_LIFT)
+                foot, toe = (hx + ox, _FLOOR + oy), (0.34, -0.06 if oy else 0.0)
+            elif kind == "jump":                   # front knee up, back leg kicked out behind
+                foot, toe = ((hx + 0.3, -0.6), (0.3, -0.12)) if i else ((hx - 0.42, -0.86), (0.3, -0.14))
+            else:                                  # dropping: both legs reach for the ground
+                foot, toe = ((hx + 0.12, -1.0), (0.3, -0.08)) if i else ((hx - 0.14, -0.98), (0.3, -0.08))
+            knee = _knee(hip, foot, _ROBOT_THIGH, _ROBOT_SHIN, 1)
+            out[i] = [hip, knee, foot, (foot[0] + toe[0], foot[1] + toe[1])]
+    elif mode == SPIDER:
+        for i, (hip, rest_knee, rest_foot) in enumerate(_SPIDER_REST):
+            upper = math.hypot(rest_knee[0] - hip[0], rest_knee[1] - hip[1])
+            lower = math.hypot(rest_foot[0] - rest_knee[0], rest_foot[1] - rest_knee[1])
+            side = 1 if hip[0] > 0 else -1
+            if kind == "run":
+                ox, oy = _step(phase + 0.5 * (i % 2), 0.4, 0.3)
+                foot = (rest_foot[0] + ox, rest_foot[1] + oy)
+            elif kind == "jump":                   # legs drawn in under the body
+                foot = (rest_foot[0] * 0.62, -0.7)
+            else:
+                foot = (rest_foot[0] * 0.85, -0.9)
+            out[i] = [hip, _knee(hip, foot, upper, lower, side), foot]
+    else:
+        return None
+    return out
+
+
 def _colour(role, primary):
     return primary if role == "p" else ROLE[role]
 
@@ -159,9 +237,13 @@ class IconSprite:
         self._half = None
         self._colour = MODE_COLORS[mode]
 
-    def place(self, cx, cy, half, rotation=0.0, flipped=False):
+    def place(self, cx, cy, half, rotation=0.0, flipped=False, pose=None):
+        """pose: see leg_pose (None: the legs as drawn standing)."""
         cv = self.cv
-        for item, (kind, points, _role, _outlined, width) in zip(self.items, ICONS[self.mode]):
+        legs = leg_pose(self.mode, pose) if pose is not None else None
+        for i, (item, (kind, points, _role, _outlined, width)) in enumerate(zip(self.items, ICONS[self.mode])):
+            if legs is not None and i in legs:
+                points = legs[i]
             cv.coords(item, *_transform(points, cx, cy, half, rotation, flipped))
             if kind == "line" and half != self._half:
                 cv.itemconfigure(item, width=max(1.0, width * half))

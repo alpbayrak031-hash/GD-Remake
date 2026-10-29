@@ -6,6 +6,7 @@ working on them (e.g. `sips -s format png shot.svg --out shot.png`), and covers
 what this project draws: rectangles, polygons, ovals, lines and text.
 """
 import html
+import math
 
 
 def _font(cv, item):
@@ -58,6 +59,13 @@ def canvas_to_svg(cv, path, background=None):
         elif kind == "oval":
             out.append('<ellipse cx="%g" cy="%g" rx="%g" ry="%g" %s/>' % (
                 (c[0] + c[2]) / 2, (c[1] + c[3]) / 2, abs(c[2] - c[0]) / 2, abs(c[3] - c[1]) / 2, paint(item)))
+        elif kind == "arc":                       # only style "arc" (an open curve) is used by the game
+            cx, cy, rx, ry = (c[0] + c[2]) / 2, (c[1] + c[3]) / 2, abs(c[2] - c[0]) / 2, abs(c[3] - c[1]) / 2
+            start, extent = float(cv.itemcget(item, "start")), float(cv.itemcget(item, "extent"))
+            a0, a1 = math.radians(start), math.radians(start + extent)
+            out.append('<path d="M %g %g A %g %g 0 %d 0 %g %g" fill="none" stroke="%s" stroke-width="%s"/>' % (
+                cx + rx * math.cos(a0), cy - ry * math.sin(a0), rx, ry, int(abs(extent) > 180),
+                cx + rx * math.cos(a1), cy - ry * math.sin(a1), cv.itemcget(item, "outline"), cv.itemcget(item, "width")))
         elif kind == "polygon":
             pts = " ".join("%g,%g" % (c[i], c[i + 1]) for i in range(0, len(c), 2))
             out.append('<polygon points="%s" %s/>' % (pts, paint(item)))

@@ -246,13 +246,30 @@ In a level:
 | Key | Action |
 |---|---|
 | Space / Up / W / click | jump (hold) |
-| Esc or P | pause menu: resume, restart, practice mode, hitboxes, debug info, exit |
+| Esc or P | pause menu: resume, restart, practice mode, hitboxes, debug info, FPS counter, decoration, click between frames, exit |
 | R | restart |
 | Z / X | practice mode: place / remove a checkpoint |
 | H | hitboxes: blue = solid, red = kills, green = safe to touch; the player shows all three of its boxes (see Hitboxes) |
 | O | debug overlay: tick, position, velocity, mode, speed, state flags |
 | F | FPS counter, top right: frames per second over the last second, **1% low** (the average frame rate of the slowest 1% of frames in the last 10 seconds) and **1% high** (the fastest 1%). Also in the pause menu; the game remembers whether it is on |
+| C | **click between frames** (CBF) on/off - see below. Also in the pause menu; remembered |
 | T, N, - / = | trail, single step, slow down / speed up |
+
+**Click between frames** works the way syzzi's CBF mod for GD 2.2 does
+([source](https://github.com/theyareonit/Click-Between-Frames), `src/main.cpp`). Off, as in
+vanilla GD, every click waits for the start of the next frame and counts from the first
+physics step of it. On, the time since the last frame is shared out evenly among that
+frame's steps, a click lands on the step it happened in, and that step is split at the
+moment of the click: the icon moves up to it with the old button, collides, gets the
+click and moves the rest of the way. As in the mod, a step is split only for an icon
+that is on the ground, touching an orb, dashing or flying; a cube, ball, robot or spider
+in mid-air gets the click at the start of that step. It matters most at low frame rates.
+Two limits: a click is timed when Tk hands it to the game - straight away while the game
+waits for the next frame, but only after drawing when it comes during it (the mod reads
+input on its own thread, which Python cannot do on macOS without the Input Monitoring
+permission) - and a recording made with it on (S, or `--record`) keeps the step of each
+click but not how far into the step it came, so it replays very slightly differently.
+The bot never uses it.
 
 **Practice mode** drops a checkpoint every 1.25 s while you are safe and puts you back at
 the last one when you die. A checkpoint you die at twice within 0.4 s is removed
@@ -280,7 +297,15 @@ thrusters). The wave is drawn smaller than the others, as in GD.
 | swing | a ribbon the whole time, a flame at the back and one on the side gravity pulls away from |
 | robot | a flame under the feet while a held jump is being boosted |
 | spider | a beam between the two ends of each teleport |
-| dash orb | a cone of fire behind the player; the ribbon is off while dashing |
+| dash orb | a flickering cone of fire behind the player, throwing sparks back; the ribbon is off while dashing |
+| any orb | a ring that widens out from the orb and fades when it is hit |
+
+**Animations.** The robot and the spider walk: on the ground their feet step back exactly
+as fast as the ground passes under them, and in the air they take a jump pose while rising
+and a fall pose while dropping. Orbs' rings pulse; a dash orb has three arcs turning round it
+and chevrons running out the way it will send you; sawblades turn. The poses, the pulse
+rate, the ring's size and timing are judged by eye (GD's animations are sprite frames that
+are not part of this project, and its orbs pulse to the music, which there is none of here).
 
 When each trail turns on and off, the wave band's widths (6 and 2 units times size), the
 0.2 s wave fade and the 0.12 s UFO burst come from the decompiled game. The ribbon's
@@ -437,17 +462,17 @@ always says what the current tool does.
 | Input | Action |
 |---|---|
 | left click / drag | place the selected object (snaps to the 30-unit grid) |
-| right click / drag, or Shift + left | erase |
+| right click / drag, or Shift + left (except with the Select tool) | erase |
 | Alt/Option + click | pick the object under the cursor as the brush |
 | **1** - **9**, **0**, Tab | choose a tile in the open tab, next tab |
 | **R**, **F**, **V** | rotate the brush 90 degrees, flip X, flip Y |
 | **E** | erase tool on/off |
-| **S** | select tool on/off: click an object, Shift + click to add one, drag over empty space for a box |
+| **S** | select tool on/off: click an object, drag over empty space for a box; Shift + click adds an object or takes it out of the selection, Shift + box adds what it covers |
 | drag a selection, arrows | move the selection (snaps to the grid), nudge it one cell |
 | **R** (with a selection), Delete | turn the selection 90 degrees as a group, remove it |
 | Cmd/Ctrl + C, V, D, A | copy, paste where the mouse is, duplicate next to it, select all |
 | Esc | deselect (again: back to building) |
-| **G** | half grid (15 units) |
+| **G** | grid size: 30, 15, 7.5 or 3.75 units (the button shows which) |
 | **I** | properties: groups, and what a trigger or teleport portal does |
 | wheel / trackpad, arrows, **A** / **D**, Home / End, the scrollbar | scroll |
 | Space + drag | pan |

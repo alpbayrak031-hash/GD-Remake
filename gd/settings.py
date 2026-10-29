@@ -5,7 +5,7 @@ import os
 
 from .paths import SAVEDATA                   # (read when called, so tests can point it elsewhere)
 
-DEFAULTS = {"show_fps": False, "show_deco": True}
+DEFAULTS = {"show_fps": False, "show_deco": True, "cbf": False}
 
 
 def _path():

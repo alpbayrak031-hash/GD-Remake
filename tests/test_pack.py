@@ -176,6 +176,8 @@ class EditorModel(unittest.TestCase):
         self.assertEqual(snap_position(35, 100, 140, rot=180)[:2], (105.0, 148.0))  # ...or hangs from its ceiling
         self.assertEqual(snap_position(39, 100, 20)[:2], (105.0, 7.0))             # small spike
         self.assertEqual(snap_position(291, 100, 20)[:2], (120.0, 15.0))           # long slope spans two cells
+        self.assertEqual(snap_position(1, 101.4, 52, step=7.5)[:2], (105.0, 52.5))  # the finer grids
+        self.assertEqual(snap_position(1, 101.4, 52, step=3.75)[:2], (101.25, 52.5))
 
     def test_place_erase_undo_redo(self):
         doc = LevelDocument("t")

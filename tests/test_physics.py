@@ -825,6 +825,55 @@ class DualMode(unittest.TestCase):
         self.assertFalse(sim.dead, sim.player.death_cause)
 
 
+class ClickBetweenFrames(unittest.TestCase):
+    """CBF: a click part-way into a step splits that step (syzzi's mod, src/main.cpp)."""
+
+    def ground_cube(self):
+        sim = Simulation(LevelBuilder().level())
+        for _ in range(5):
+            sim.step(False)
+        self.assertTrue(sim.player.on_ground)
+        return sim
+
+    def test_a_click_half_way_through_a_step_jumps_half_a_step_later(self):
+        heights = []
+        for at in (None, 0.5):
+            sim = self.ground_cube()
+            sim.step(True, at)
+            heights.append(sim.player.y)
+        start = self.ground_cube().player.y
+        self.assertGreater(heights[1], start, "it still leaves the ground in that step ...")
+        self.assertLess(heights[1], heights[0], "... but rises for half the step only")
+
+    def test_an_icon_in_mid_air_gets_the_click_at_the_start_of_the_step(self):
+        a, b = self.ground_cube(), self.ground_cube()
+        for sim in (a, b):
+            sim.step(True)
+            sim.step(False)
+            sim.step(False)
+            self.assertFalse(sim.player.on_ground)
+        a.step(True)
+        b.step(True, 0.5)                               # a cube in the air is "buffering": not split
+        self.assertEqual(a.state(), b.state())
+
+    def test_no_change_no_split(self):
+        a, b = self.ground_cube(), self.ground_cube()
+        a.step(False)
+        b.step(False, 0.5)
+        self.assertEqual(a.state(), b.state())
+
+    def test_a_ship_splits_too(self):
+        heights = []
+        for at in (None, 0.25):
+            sim = Simulation(LevelBuilder(mode=1).level())
+            for _ in range(20):
+                sim.step(False)
+            sim.step(True, at)
+            sim.step(True)
+            heights.append(sim.player.y_vel)
+        self.assertNotEqual(heights[0], heights[1])
+
+
 class Bot(unittest.TestCase):
     """gd/autoplay.py: what the search skips, and what it proves."""
 

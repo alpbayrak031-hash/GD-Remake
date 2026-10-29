@@ -134,13 +134,16 @@ def cell_position(oid, col, row, rot=0.0, grid=GRID):
     return round(x, 3), round(y, 3)
 
 
-def snap_position(oid, wx, wy, rot=0.0, half=False):
+def snap_position(oid, wx, wy, rot=0.0, half=False, step=GRID):
     """Where object `oid` lands when dropped at world point (wx, wy).
 
-    Full grid: the centre of the 30-unit cell under the cursor.  Half grid: the nearest
-    multiple of 15, which is how GD's editor lets you place things between cells."""
+    Full grid: the centre of the 30-unit cell under the cursor.  A finer grid (`step` 15,
+    7.5 or 3.75; `half` is step 15): the nearest multiple of the step, which is how GD's
+    editor lets you place things between cells."""
     if half:
-        cx, cy = round(wx / 15.0) * 15.0, round(wy / 15.0) * 15.0
+        step = GRID / 2
+    if step < GRID:
+        cx, cy = round(wx / step) * step, round(wy / step) * step
     else:
         cx, cy = (math.floor(wx / GRID) + 0.5) * GRID, (math.floor(wy / GRID) + 0.5) * GRID
     ox, oy = CELL_OFFSET.get(oid, (0.0, 0.0))

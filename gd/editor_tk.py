@@ -12,11 +12,12 @@ existed, the old version is copied to savedata/backups/ in that folder first.
 
 Mouse   left click / drag   place the selected object (snaps to the grid)
         right click / drag  erase            (also: Shift + left, or the Erase tool)
-        Select tool (S)     click / drag a box to select, drag a selection to move it
+        Select tool (S)     click / drag a box to select, drag a selection to move it,
+                            Shift + click / box to add to the selection or take one out
         Alt/Option + click  pick the object under the cursor as the brush
         wheel / trackpad    scroll           (arrow keys and A / D also scroll)
         Space + drag        pan
-Keys    R rotate   F flip X   V flip Y   E erase tool   G half grid   H hitboxes
+Keys    R rotate   F flip X   V flip Y   E erase tool   G grid size   H hitboxes
         1-9, 0 pick a tile   Tab next tab   - / = zoom   Home / End   ? help
         P play   B watch the bot   Ctrl/Cmd + O / N / Z, Shift+Z redo
         Ctrl/Cmd + W close the editor   Ctrl/Cmd + S save right now
@@ -47,16 +48,17 @@ REPLAY_SECONDS = 6.0          # the most "Watch bot" spends making its replay ne
 CONTINUE_FACTOR = 8           # "Continue anyway": this many times the search budget, then 64 times, ...
 MOD = "Command" if sys.platform == "darwin" else "Control"
 ZOOMS = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
+GRIDS = (GRID, GRID / 2, GRID / 4, GRID / 8)   # 30, 15, 7.5 and 3.75 units; G goes through them
 TOP_H, BAR_H, TILE = 56, 150, 62
 KEYS = "GDEditorKeys"         # a bind tag: the editor's shortcuts live on its own widgets, not on the window
 BAR_BG = "#10151F"            # the toolbars are a shade darker than panels, so quiet buttons still show
 HELP = """Building
   left click / drag        place the selected object
-  right click / drag       erase   (or Shift + left, or the Erase tool: E)
+  right click / drag       erase   (or Shift + left - except with the Select tool - or the Erase tool: E)
   Alt / Option + click     pick the object under the cursor
   R   F   V                rotate 90,  flip X,  flip Y
   1 - 9, 0                 choose a tile          Tab   next tab
-  G                        half grid (15 units)
+  G                        grid size: 30, 15, 7.5, 3.75 units, then 30 again
   I                        properties of the selection (or what is under the mouse):
                            its groups, and what a trigger or teleport portal does
 
@@ -247,7 +249,7 @@ class Editor(Painter):
         rx = w - 196
         cv.create_line(rx - 12, 10, rx - 12, BAR_H - 10, fill=ui.LINE)
         cv.create_text(rx, 16, text="VIEW", anchor="w", fill=ui.MUTED, font=ui.font(10, True))
-        ui.Button(cv, rx, 28, 88, 34, "Grid %d" % self.grid, self._toggle_grid, "normal", 12, "G", radius=8)
+        ui.Button(cv, rx, 28, 88, 34, "Grid %g" % self.grid, self._toggle_grid, "normal", 12, "G", radius=8)
         ui.Button(cv, rx + 94, 28, 90, 34, "Hitboxes", self._toggle_hit, "accent" if self.show_hit else "quiet", 12,
                   "H", radius=8)
         ui.Button(cv, rx, 68, 40, 34, "-", lambda: self._zoom(-1), "normal", 16, radius=8)
@@ -333,7 +335,7 @@ class Editor(Painter):
         cv.bind("<Configure>", lambda e: self._view_changed())
         cv.bind("<Motion>", self._motion)
         cv.bind("<Leave>", lambda e: cv.delete("ghost"))
-        cv.bind("<ButtonPress-1>", lambda e: self._press(e, erase=bool(e.state & 0x1)))
+        cv.bind("<ButtonPress-1>", lambda e: self._press(e, erase=bool(e.state & 0x1), left=True))
         cv.bind("<B1-Motion>", self._drag)
         cv.bind("<ButtonRelease-1>", self._end_stroke)
         for n in (2, 3):
@@ -419,7 +421,7 @@ class Editor(Painter):
         return (e.x + self.left) / self.zoom, -(e.y + self.top) / self.zoom
 
     def _brush_position(self, wx, wy):
-        return snap_position(self.brush, wx, wy, self.rot, half=self.grid != GRID)
+        return snap_position(self.brush, wx, wy, self.rot, step=self.grid)
 
     # ------------------------------------------------------------------ drawing
     def _view_changed(self):
@@ -650,7 +652,7 @@ class Editor(Painter):
                                  outline=ui.GREEN if self.tool == "place" else ui.RED, tags="ghost")
         self._status("column %d, row %d" % (wx // GRID, wy // GRID))
 
-    def _press(self, e, erase=False):
+    def _press(self, e, erase=False, left=False):
         self.cv.focus_set()
         if self.help_open:
             self.toggle_help()
@@ -658,7 +660,7 @@ class Editor(Painter):
         if self._space:
             self._pan = (e.x, e.y, self.left, self.top)
             return
-        if self.tool == "select" and not erase:
+        if self.tool == "select" and (left or not erase):    # (Shift + left adds to the selection there)
             self._select_press(e)
             return
         self._stroke = "erase" if (erase or self.tool == "erase") else "place"
@@ -828,6 +830,7 @@ class Editor(Painter):
                 cv.move("sel", (dx - ox) * z, -(dy - oy) * z)
                 self._sel["shown"] = (dx, dy)
         else:
+            self._sel["end"] = self._mouse = (wx, wy)     # (a drag sends no plain <Motion> to note it)
             cv.delete("selbox")
             cv.create_rectangle(sx * z, -sy * z, wx * z, -wy * z, outline=ui.CYAN, dash=(3, 3), tags="selbox")
 
@@ -842,12 +845,13 @@ class Editor(Painter):
                 self._view_changed()
             return
         sx, sy = sel["start"]
-        wx, wy = self._mouse or (sx, sy)
+        wx, wy = sel.get("end", (sx, sy))
         if abs(wx - sx) < 2 and abs(wy - sy) < 2:          # a click on empty space just deselects
             self._set_selection(sel["keep"])
             return
         found = self.doc.inside(min(sx, wx), max(sx, wx), min(sy, wy), max(sy, wy))
-        self._set_selection(sel["keep"] + found)
+        kept = {o.uid for o in sel["keep"]}
+        self._set_selection(sel["keep"] + [o for o in found if o.uid not in kept])
 
     def nudge(self, dx, dy):
         """Arrow keys: move the selection one grid step, or scroll when nothing is selected."""
@@ -967,7 +971,7 @@ class Editor(Painter):
         return win
 
     def _toggle_grid(self):
-        self.grid = GRID / 2 if self.grid == GRID else GRID
+        self.grid = GRIDS[(GRIDS.index(self.grid) + 1) % len(GRIDS)] if self.grid in GRIDS else GRID
         self._draw_bar()
 
     def _toggle_hit(self):
