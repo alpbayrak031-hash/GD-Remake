@@ -54,6 +54,7 @@ FPS_CAP = 240                        # frames a second at most: one per physics 
 CHUNK = 600.0                        # world units: level objects are drawn and dropped this many at a time
 VIEW_MARGIN = 360.0                  # ... and drawn this far beyond the screen's edges, so nothing pops in
 SAW_SPIN = -300.0                    # degrees a second the saws' teeth turn (clockwise) - purely visual, EST
+BOUND_SLIDE = 10.0                   # how quickly a floor / ceiling slides into place (1/s; EST, by eye)
 DECO_PER_FRAME = 350                 # decoration shapes made per frame at most, so a busy chunk never stutters
 DECO_DIM = 0.3                       # how far decoration is mixed into the background: the gameplay stays in front
 
@@ -712,10 +713,23 @@ class GameView(Painter):
 
     def _build_dynamic(self):
         cv = self.cv
-        # the floor and ceiling of flying modes: only a faint line, so nothing of the level is covered
-        limit = blend(self.bg, "#DDE3F0", 0.35)
-        self.it_floor = cv.create_line(0, 0, 0, 0, fill=limit, width=2, dash=(10, 6), state="hidden")
-        self.it_ceil = cv.create_line(0, 0, 0, 0, fill=limit, width=2, dash=(10, 6), state="hidden")
+        # The floor and ceiling of flying modes (and dual mode), drawn the way GD does: its ground
+        # moves up to the floor and a second, upside-down ground comes down to the ceiling - a
+        # band of ground colour with a lighter edge and the glowing ground line.  Like GD's
+        # ground they cover whatever of the level lies beyond them.
+        line = blend(self.ground, "#FFFFFF", 0.9)
+        self.it_bounds = {}
+        for side in ("floor", "ceiling"):
+            hidden = dict(outline="", state="hidden")
+            band = cv.create_rectangle(0, 0, 0, 0, fill=self.ground, **hidden)
+            edge = cv.create_rectangle(0, 0, 0, 0, fill=blend(self.ground, "#FFFFFF", 0.05), **hidden)
+            glow = cv.create_line(0, 0, 0, 0, fill=blend(line, self.bg, 0.6), width=max(3, int(4 * self.zoom)),
+                                  state="hidden")
+            bright = cv.create_line(0, 0, 0, 0, fill=line, width=2, state="hidden")
+            self.it_bounds[side] = (band, edge, glow, bright)
+            self.it_ground += [(band, 0.0), (edge, 0.05)]       # recoloured with the ground (colour triggers)
+        self.bound_at = {"floor": None, "ceiling": None}      # where each is drawn: it slides to the real one
+        self.bound_tick = 0
         self.it_trail = cv.create_line(0, 0, 0, 0, fill="#FFFFFF", width=1, state="hidden")
         # the player's three boxes ("phit": drawn over the icon, like GD does)
         both = ("hit", "phit")
@@ -1087,6 +1101,48 @@ class GameView(Painter):
         wait = (now + period - self.slack - time.perf_counter()) * 1000.0
         self.cv.after(max(1, int(round(wait))), self._frame)
 
+    def _draw_bounds(self, x0, x1, view_top):
+        """Slide the floor and ceiling towards where the simulation has them (EST: GD moves its
+        grounds in and out smoothly; BOUND_SLIDE is judged by eye).  A floor that goes away
+        sinks back into the ground, a ceiling rises off the screen."""
+        sim, cv = self.sim, self.cv
+        k = 1.0 - math.exp(-self.frame_dt * BOUND_SLIDE)
+        # a restart or a jump back to a checkpoint puts them straight where they belong
+        snap = sim.tick == 0 or sim.tick < self.bound_tick
+        self.bound_tick = sim.tick
+        targets = {"floor": sim.floor if sim.ceiling is not None else None, "ceiling": sim.ceiling}
+        away = {"floor": 0.0, "ceiling": view_top + 300.0}
+        for side in ("floor", "ceiling"):
+            items = self.it_bounds[side]
+            target, at = targets[side], self.bound_at[side]
+            if target is None:
+                if at is None:
+                    continue
+                at += (away[side] - at) * k
+                if snap or abs(away[side] - at) < 1.0:
+                    self.bound_at[side] = None
+                    for item in items:
+                        cv.itemconfigure(item, state="hidden")
+                    continue
+            elif snap:
+                at = target
+            elif at is None:
+                at = away[side]
+            else:
+                at += (target - at) * k
+                if abs(target - at) < 0.5:
+                    at = target
+            self.bound_at[side] = at
+            band, edge, glow, bright = items
+            d = -1.0 if side == "floor" else 1.0                    # the side the band lies on
+            wx0, wx1, wy = self._wx(x0), self._wx(x1), self._wy(at)
+            cv.coords(band, wx0, wy, wx1, self._wy(at + d * 1500.0))
+            cv.coords(edge, wx0, wy, wx1, self._wy(at + d * 60.0))
+            cv.coords(glow, wx0, wy, wx1, wy)
+            cv.coords(bright, wx0, wy, wx1, wy)
+            for item in items:
+                cv.itemconfigure(item, state="normal")
+
     def _draw_second(self, q, z):
         """Dual mode: the second icon (and its two boxes when hitboxes are shown)."""
         cv = self.cv
@@ -1133,15 +1189,7 @@ class GameView(Painter):
         if self.saws:
             self._spin_saws(now)
 
-        if sim.ceiling is not None:
-            x0, x1 = p.x - 2000, p.x + 3000
-            cv.coords(self.it_floor, self._wx(x0), self._wy(sim.floor), self._wx(x1), self._wy(sim.floor))
-            cv.coords(self.it_ceil, self._wx(x0), self._wy(sim.ceiling), self._wx(x1), self._wy(sim.ceiling))
-            cv.itemconfigure(self.it_floor, state="normal")
-            cv.itemconfigure(self.it_ceil, state="normal")
-        else:
-            cv.itemconfigure(self.it_floor, state="hidden")
-            cv.itemconfigure(self.it_ceil, state="hidden")
+        self._draw_bounds(p.x - 2000, p.x + 3000, -top / z)
         for uid in sim.destroyed:
             cv.itemconfigure("obj%d" % uid, state="hidden")
 

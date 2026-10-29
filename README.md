@@ -750,8 +750,10 @@ and another simulator. Treat "frame-accurate" as a goal, not a claim.
   (spikes facing the way the level flips and turns them), sawblades with spinning teeth,
   portals in GD's colours as glowing rings (speed portals as chevrons), decoration as
   plain shapes (see "Decoration"). A level's own background and ground colours are used,
-  darkened so the shapes stay readable. The floor and ceiling of flying modes are only
-  marked with a thin dashed line.
+  darkened so the shapes stay readable. The floor and ceiling of flying modes are drawn
+  as GD draws them: the ground (with its glowing line) moves up to the floor and an
+  upside-down copy comes down to the ceiling, covering whatever of the level lies beyond.
+  How quickly they slide in and out is judged by eye (`BOUND_SLIDE` in gd/render_tk.py).
 
 ## Licence note
 

@@ -279,6 +279,33 @@ class GameViewDrawing(unittest.TestCase):
         self.assertAlmostEqual(v.cv.coords(moving)[1], y0, places=3)
         self.assertTrue(v.cv.find_withtag("k1"), "and back after a restart")
 
+    def test_the_ceiling_slides_in_like_gd_and_covers_the_level_beyond_it(self):
+        b = LevelBuilder()
+        b.add(13, 45, 45)                               # a ship portal at the start
+        b.block(4, 14)                                  # a block above the ceiling
+        v = self.view(b.level())
+        v.frame_dt = 1 / 60.0
+        band = v.it_bounds["ceiling"][0]
+        v._draw(0.0)
+        self.assertEqual(v.cv.itemcget(band, "state"), "hidden", "a cube has no ceiling")
+        while v.sim.ceiling is None:
+            v.sim.step(False)
+        v._draw(0.0)
+        first = v.bound_at["ceiling"]
+        self.assertGreater(first, v.sim.ceiling, "it starts above the screen ...")
+        v._draw(0.0)
+        self.assertTrue(v.sim.ceiling < v.bound_at["ceiling"] < first, "... comes down ...")
+        for _ in range(120):
+            v._draw(0.0)
+        self.assertEqual(v.bound_at["ceiling"], v.sim.ceiling, "... and settles on the real ceiling")
+        self.assertEqual(v.cv.itemcget(band, "state"), "normal")
+        self.assertEqual(v.cv.itemcget(band, "fill"), v.ground, "in the ground's colour")
+        order = v.cv.find_all()
+        self.assertGreater(order.index(band), order.index(v.cv.find_withtag("obj1")[0]), "drawn over the level")
+        v.sim.reset()
+        v._draw(0.0)
+        self.assertEqual(v.cv.itemcget(band, "state"), "hidden", "a restart takes it away at once")
+
 
 class FpsCounter(unittest.TestCase):
     def feed(self, durations, start=100.0):
