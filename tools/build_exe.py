@@ -207,7 +207,9 @@ def self_check(exe, work):
 
 
 def running(exe):
-    """The processes holding the app we are about to replace open, if any."""
+    """The processes holding open the very app we are about to replace, if any.  Another
+    copy of the game somewhere else - on the Desktop, say - is none of our business, so
+    each process is matched by the file it is running, not just by its name."""
     if not os.path.exists(exe):
         return []
     try:
@@ -216,7 +218,27 @@ def running(exe):
     except (OSError, subprocess.TimeoutExpired):
         return []
     quoted = '"%s.exe"' % NAME
-    return [line.split(",")[1].strip('"') for line in out.splitlines() if line.startswith(quoted)]
+    pids = [line.split(",")[1].strip('"') for line in out.splitlines() if line.startswith(quoted)]
+    want = os.path.normcase(os.path.abspath(exe))
+    return [pid for pid in pids if os.path.normcase(image_of(int(pid))) == want]
+
+
+def image_of(pid):
+    """The file a process is running, asked of Windows directly ("" when it will not say)."""
+    import ctypes
+    QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = ctypes.WinDLL("kernel32.dll")
+    handle = kernel32.OpenProcess(QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ""
+    try:
+        size = ctypes.c_ulong(32768)
+        buf = ctypes.create_unicode_buffer(size.value)
+        if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+            return buf.value
+        return ""
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 # ---------------------------------------------------------------------------- putting it together

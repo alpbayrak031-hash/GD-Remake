@@ -50,7 +50,9 @@ SPIKE_ART = {8: (30, 30), 144: (30, 30), 177: (30, 30), 216: (30, 30),
 # background tint per difficulty, so a level's mood is visible at a glance
 THEMES = {"easy": "#0E1A2E", "medium": "#161A33", "hard": "#231528", "very hard": "#260F18"}
 AUTO_CHECKPOINT_TICKS = 300          # practice mode: one checkpoint every 1.25 s when safe
-FPS_CAP = 240                        # frames a second at most: one per physics step - more only costs battery
+FPS_CAP = 240                        # the rate aimed for: one frame per physics step, more being wasted work.
+                                     # A frame with time left over waits for it (see MIN_SLEEP_MS for one without)
+MIN_SLEEP_MS = 2.0                   # Tk cannot wait less than about this (after(1) overshoots); below it, don't
 CHUNK = 600.0                        # world units: level objects are drawn and dropped this many at a time
 VIEW_MARGIN = 360.0                  # ... and drawn this far beyond the screen's edges, so nothing pops in
 SAW_SPIN = -300.0                    # degrees a second the saws' teeth turn (clockwise) - purely visual, EST
@@ -1208,7 +1210,15 @@ class GameView(Painter):
         period = 1.0 / FPS_CAP
         self.slack = min(period, max(0.0, self.slack + (0.0001 if dt > period else -0.0001)))
         wait = (now + period - self.slack - time.perf_counter()) * 1000.0
-        self.cv.after(max(1, int(round(wait))), self._frame)
+        # A frame that already took most of its budget has a sliver of waiting left, and asking
+        # Tk for it costs more than the sliver: after(1) sleeps a whole timer tick (nearer 2 ms
+        # on Windows), which is what held a heavy level to ~170 fps instead of the 240 asked for.
+        # Under that floor the next frame is queued to run straight away; a frame with real time
+        # to spare still sleeps, so a level the machine finds easy keeps to the cap.
+        if wait >= MIN_SLEEP_MS:
+            self.cv.after(int(round(wait)), self._frame)
+        else:
+            self.cv.after(0, self._frame)
 
     def _draw_bounds(self, x0, x1, view_top):
         """Slide the floor and ceiling towards where the simulation has them (EST: GD moves its

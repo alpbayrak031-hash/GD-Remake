@@ -282,8 +282,11 @@ on the menu:
 
 The game draws only the part of the level around the camera (in 600-unit chunks, added
 and dropped as it scrolls), so a level of 20,000+ objects plays as smoothly as a small
-one, and it runs up to 240 frames a second - one per physics step, so a press is never
-more than a step late; more would only use up the battery.
+one, and it aims for 240 frames a second - one per physics step, so a press is never more
+than a step late; drawing more often than the physics moves would be wasted work. A frame
+that still has time in its budget waits for it; one that has used the budget up goes
+straight on to the next rather than sleeping a whole timer tick, which is what Tk's
+millisecond timers charge for the smallest wait you can ask them for.
 
 In a level:
 

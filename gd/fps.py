@@ -5,10 +5,10 @@ FPS       frames drawn in the last second, divided by the time they took.
           seconds - a single long stall shows up here even when the average is fine.
 1% high   the same for the fastest 1%.
 
-A "frame" is one pass of the game view's draw loop.  The loop asks to be called again
-5 ms after each frame, so the counter tops out a little below 200 whatever the screen's
-refresh rate is; the physics is unaffected either way (it always runs at 240 steps a
-second, see gd/render_tk.py).
+A "frame" is one pass of the game view's draw loop.  The loop aims for 240 a second and
+gets as close as Tk's timers allow, whatever the screen's refresh rate is (gd/render_tk.py:
+FPS_CAP and MIN_SLEEP_MS).  However many it manages, the physics is unaffected: that always
+runs at 240 steps a second.
 """
 import math
 from collections import deque
