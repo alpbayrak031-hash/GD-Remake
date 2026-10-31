@@ -863,6 +863,7 @@ class App:
         root.geometry("1180x700")
         root.minsize(*MENU_MIN)
         root.configure(bg=ui.BG)
+        ui.set_window_icon(root)
         self.cv = tk.Canvas(root, bg=ui.BG, highlightthickness=0, takefocus=1)
         self.cv.pack(fill="both", expand=True)
         self.home_error = paths.ensure_home()         # the player's folder in Documents ("" = fine)

@@ -8,6 +8,7 @@
   python3 main.py CCLocalLevels.dat --list
   python3 main.py mylevel.gmd --headless --replay run.gdr2 --trace trace.csv
   python3 tools/build_app.py                   # make "GD Remake.app" (macOS)
+  python tools\build_exe.py                    # make "GD Remake.exe" (Windows)
 """
 import argparse
 import csv
@@ -202,10 +203,16 @@ def where():
     print("sharing        %s" % ("a level went from a host to a guest on this computer" if arrived else "FAILED"))
     if not arrived:
         return 1
-    app = os.path.dirname(os.path.dirname(os.path.dirname(paths.ROOT)))      # .../GD Remake.app
+    if getattr(sys, "frozen", False):                                        # ...\GD Remake\GD Remake.exe
+        app = os.path.dirname(sys.executable)
+    else:
+        app = os.path.dirname(os.path.dirname(os.path.dirname(paths.ROOT)))   # .../GD Remake.app
+    roots = [app] + [p for p in [getattr(sys, "_MEIPASS", "")] if p]          # one file: unpacked elsewhere
     outside = sorted({getattr(m, "__file__", None) or "" for m in list(sys.modules.values())} - {""})
-    outside = [f for f in outside if not paths.inside(f, app)]
-    outside += [p for p in (sys.prefix, os.path.dirname(os.__file__), tcl) if not paths.inside(p, app)]
+    # the Windows app's own bootstrap modules come out of the .exe and have a bare name, not a path
+    outside = [f for f in outside if os.path.isabs(f) and not any(paths.inside(f, r) for r in roots)]
+    outside += [p for p in (sys.prefix, os.path.dirname(os.__file__), tcl)
+                if not any(paths.inside(p, r) for r in roots)]
     print("app            %s" % app)
     print("outside the app: %s" % (", ".join(outside) if outside else "none"))
     return 1 if outside else 0

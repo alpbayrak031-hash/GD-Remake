@@ -1423,6 +1423,7 @@ class Viewer:
 
     def __init__(self, sim, inputs=None, record_path=None, zoom=1.5, show_hitboxes=False, **kw):
         self.root = tk.Tk()
+        ui.set_window_icon(self.root)
         self.root.title("GD physics - %s" % sim.level.name)
         self.root.geometry("1180x680")
         self.root.configure(bg=BG)

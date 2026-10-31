@@ -1,8 +1,9 @@
 """Where things live.
 
 ROOT         the program: the gd package and levels/, which holds the built-in level
-             pack.  Inside the macOS app this is Contents/Resources/app.  Nothing is
-             ever written here while the game runs.
+             pack.  Inside the macOS app this is Contents/Resources/app; inside the
+             Windows app it is _internal, the folder beside the .exe it unpacks into.
+             Nothing is ever written here while the game runs.
 HOME         the player's folder, ~/Documents/GD Remake.  Everything the game writes:
                levels/      the levels you build or import (deleted ones: levels/trash/)
                savedata/    progress.json, timing.json and the editor's backups/
@@ -10,8 +11,11 @@ HOME         the player's folder, ~/Documents/GD Remake.  Everything the game wr
              tests do, so they never touch the real one).
 """
 import os
+import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# _MEIPASS is where the Windows app unpacks itself; there the program is not a folder of
+# .py files, so __file__ is no guide.  Everywhere else the package's own place is.
+ROOT = getattr(sys, "_MEIPASS", "") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACK_LEVELS = os.path.join(ROOT, "levels")
 
 HOME = os.environ.get("GD_REMAKE_HOME") or os.path.join(os.path.expanduser("~"), "Documents", "GD Remake")

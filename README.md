@@ -8,6 +8,8 @@ easy to very hard, a hitbox viewer and a test suite.
   `tkinter`, which ships with Python.
 - **macOS app:** a self-contained `GD Remake.app` (nothing to install, not even Python)
   is on the Releases page; `python3 tools/build_app.py` builds it.
+- **Windows app:** a self-contained `GD Remake` folder with `GD Remake.exe` in it (nothing
+  to install, not even Python); `python tools\build_exe.py` builds it.
 - **Sharing:** players on the same Wi-Fi can pass levels to each other from inside the
   game ("Share on Wi-Fi") - see below.
 - **Reference version:** GD 2.2 (the decompilations used target 2.2 / 2.2081).
@@ -138,7 +140,8 @@ with it. A level you never named keeps whatever its file is called.
 
 The 13 built-in levels are part of the program (`levels/` in this repository, or inside
 the app) and are never modified. My Levels has a **Show in Finder** button for your
-folder. It is the same folder however you start the game - the app or `python3 main.py`.
+folder (**Open folder** on Windows). It is the same folder however you start the game -
+the app or `python3 main.py`.
 The first time the app touches it, macOS asks whether GD Remake may use Documents; if
 you say no, the game still runs but cannot save. Set the environment variable
 `GD_REMAKE_HOME` to keep everything somewhere else.
@@ -179,6 +182,47 @@ Xcode's command line tools. The copy leaves out what a game never uses - Python'
 suite, IDLE, pip's installer and the two modules that need OpenSSL (the game opens no
 network connections). Python's licence (`LICENSE.txt`) and Tcl/Tk's (`license.terms`)
 travel inside the app next to the files they cover.
+
+Rebuild after changing the code; your levels and progress are not inside the app, so
+rebuilding or deleting it never touches them.
+
+## The Windows app
+
+Build it yourself:
+
+```
+python tools\build_exe.py
+```
+
+which writes `dist\GD Remake\GD Remake.exe`. The whole `GD Remake` folder is the app, so
+copy all of it, not just the `.exe`. `--one-file` makes a single `.exe` instead, which
+unpacks itself into a temporary folder every time it starts and so takes a few seconds
+longer to open.
+
+- **Self-contained.** The folder carries everything it runs on: this Python source, the
+  built-in levels, and a private copy of the Python runtime (the interpreter, the standard
+  library, and Tcl/Tk for the window). Nothing has to be installed on the PC that runs it -
+  no Python, no packages. It is about 29 MB.
+- It has its own icon - in Explorer, on the title bar and on the taskbar.
+- Built and tested on Windows 11 with Python 3.12. It should run on Windows 10 and later
+  (python.org's 3.12 needs Windows 8.1 or later); I could not try older systems.
+- With no console behind the window, a crash is written to
+  `Documents\GD Remake\savedata\last_error.txt` and shown in a dialog.
+- **Not signed** (that needs a paid certificate), so SmartScreen stops the first launch of
+  a downloaded copy: click **More info**, then **Run anyway**. A copy you build yourself
+  starts directly. Windows Firewall asks once, the first time you use Share on Wi-Fi.
+- On a high-DPI screen Windows scales the window up instead of the game drawing at that
+  density (the macOS app draws at Retina density), so text is a little softer there.
+
+How the build checks itself: after PyInstaller has put the app together, the script starts
+it with a throwaway folder for its files and with `PYTHON*`/`TCL*`/`TK*` taken out of its
+environment, and asks the game where its interpreter, standard library and Tcl/Tk came
+from (`--where`), has it open its window and draw every menu screen, and passes a level
+from a host to a guest. The build fails unless every answer is a path inside the app.
+
+To build you need PyInstaller (`pip install pyinstaller`), which writes the `.exe` and
+collects the runtime; Pillow (`pip install pillow`) draws the icon, and without it the app
+keeps Python's own. No compiler is needed.
 
 Rebuild after changing the code; your levels and progress are not inside the app, so
 rebuilding or deleting it never touches them.
@@ -587,6 +631,8 @@ tools/make_level_pack.py   builds and rates the 13-level pack
 tools/canvas_svg.py        dumps a Tk canvas to SVG (used to look at screens while building them)
 tools/make_deco_table.py   builds gd/deco_table.py from Open-GD/OpenGD's object list
 tools/build_app.py         builds dist/GD Remake.app (macOS)
+tools/build_exe.py         builds dist/GD Remake/GD Remake.exe (Windows)
+tools/win_app_hook.py      runs inside the Windows app before main.py
 tests/               physics values, importers, determinism, pack, editor, progress, icons
 ```
 

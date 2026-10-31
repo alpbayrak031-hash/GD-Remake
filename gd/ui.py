@@ -6,6 +6,7 @@ platform.  `Button` gives a drawn rectangle hover and click behaviour through
 canvas tags; screens simply redraw themselves when their state changes.
 """
 import math
+import os
 import sys
 
 BG = "#0D111C"
@@ -33,6 +34,21 @@ STYLES = {
 
 def font(size, bold=False):
     return (FONT, size, "bold") if bold else (FONT, size)
+
+
+def set_window_icon(root):
+    """Give a window the app's own icon.  On Windows the title bar and the taskbar take it
+    from the window itself - the macOS app gets its icon from the bundle instead - so the
+    built app carries AppIcon.ico beside the program and this points Tk at it."""
+    from tkinter import TclError
+    from gd import paths
+    icon = os.path.join(paths.ROOT, "AppIcon.ico")
+    if not (sys.platform.startswith("win") and os.path.isfile(icon)):
+        return
+    try:
+        root.iconbitmap(default=icon)                # `default` covers the dialogs as well
+    except TclError:
+        pass                                         # an icon is not worth failing to start over
 
 
 _fonts = {}
