@@ -167,6 +167,12 @@ class Containers(Base):
         with self.assertRaises(LevelFormatError):
             load_level_file(path, "nope")
 
+    @unittest.skipUnless(sys.platform.startswith("win"), "the Windows crypto path")
+    def test_a_pc_reads_a_macos_save_with_nothing_installed(self):
+        """Windows does the AES itself, so a PC without `openssl` can still open one."""
+        cipher = bytes.fromhex("be511b397d8842b091ca03e922c732b48f8c570926098fbdc5feec5904f5ce81")
+        self.assertEqual(levelio._aes_ecb_decrypt(cipher), b"GD Remake AES check, two blocks.")
+
     @unittest.skipUnless(shutil.which("openssl"), "openssl not installed")
     def test_macos_save_file(self):
         plain = self._save_plist().encode()

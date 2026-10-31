@@ -11,12 +11,13 @@ on its first change).  The first time a session overwrites a file that already
 existed, the old version is copied to savedata/backups/ in that folder first.
 
 Mouse   left click / drag   place the selected object (snaps to the grid)
-        right click / drag  erase            (also: Shift + left, or the Erase tool)
+        right click / drag  move the view    (erase: Shift + left, or the Erase tool;
+                            a Mac erases on right click instead - see RIGHT_DRAG_PANS)
         Select tool (S)     click / drag a box to select, drag a selection to move it,
                             Shift + click / box to add to the selection or take one out
         Alt/Option + click  pick the object under the cursor as the brush
         wheel / trackpad    scroll           (arrow keys and A / D also scroll)
-        Space + drag        pan
+        Space + drag        move the view    (or a right drag, above)
 Keys    R rotate   F flip X   V flip Y   E erase tool   G grid size   H hitboxes
         1-9, 0 pick a tile   Tab next tab   - / = zoom   Home / End   ? help
         P play   B watch the bot   Ctrl/Cmd + O / N / Z, Shift+Z redo
@@ -47,14 +48,25 @@ AUTOSAVE_MS = 1000            # how often the editor checks for changes to write
 REPLAY_SECONDS = 6.0          # the most "Watch bot" spends making its replay neat (see Editor.bot)
 CONTINUE_FACTOR = 8           # "Continue anyway": this many times the search budget, then 64 times, ...
 MOD = "Command" if sys.platform == "darwin" else "Control"
+# Without a trackpad a right drag is the easy way to get around, so where the right button
+# is plainly Button-3 it moves the view instead of erasing; Shift + left still erases, as
+# does the middle button.  A Mac is left alone: Tk calls its right button Button-2 and its
+# middle one Button-3, so the two cannot be told apart there as safely.
+RIGHT_DRAG_PANS = sys.platform != "darwin"
 ZOOMS = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
 GRIDS = (GRID, GRID / 2, GRID / 4, GRID / 8)   # 30, 15, 7.5 and 3.75 units; G goes through them
 TOP_H, BAR_H, TILE = 56, 150, 62
 KEYS = "GDEditorKeys"         # a bind tag: the editor's shortcuts live on its own widgets, not on the window
 BAR_BG = "#10151F"            # the toolbars are a shade darker than panels, so quiet buttons still show
+_HELP_ERASE = ("right click / drag       move the view   (erase: Shift + left, or the Erase tool: E)"
+               if RIGHT_DRAG_PANS else
+               "right click / drag       erase   (or Shift + left - except with the Select tool"
+               " - or the Erase tool: E)")
+_HELP_PAN = ("right click + drag, Space + drag       move the view" if RIGHT_DRAG_PANS else
+             "Space + drag                           pan")
 HELP = """Building
   left click / drag        place the selected object
-  right click / drag       erase   (or Shift + left - except with the Select tool - or the Erase tool: E)
+  %s
   Alt / Option + click     pick the object under the cursor
   R   F   V                rotate 90,  flip X,  flip Y   (with a selection: the selection)
   1 - 9, 0                 choose a tile          Tab   next tab
@@ -71,7 +83,7 @@ Selecting (S: the Select tool)
 
 Moving around
   wheel / trackpad, arrows, A / D        scroll
-  Space + drag                           pan
+  %s
   - / =                                  zoom
   Home / End                             jump to the start / the finish
 
@@ -84,7 +96,7 @@ Testing and files
 
 Your level is saved automatically as you build.
 
-Press ? or Esc to close this help."""
+Press ? or Esc to close this help.""" % (_HELP_ERASE, _HELP_PAN)
 
 
 class TilePainter(Painter):
@@ -339,7 +351,10 @@ class Editor(Painter):
         cv.bind("<B1-Motion>", self._drag)
         cv.bind("<ButtonRelease-1>", self._end_stroke)
         for n in (2, 3):
-            cv.bind("<ButtonPress-%d>" % n, lambda e: self._press(e, erase=True))
+            if n == 3 and RIGHT_DRAG_PANS:
+                cv.bind("<ButtonPress-3>", lambda e: self._press(e, pan=True))
+            else:
+                cv.bind("<ButtonPress-%d>" % n, lambda e: self._press(e, erase=True))
             cv.bind("<B%d-Motion>" % n, self._drag)
             cv.bind("<ButtonRelease-%d>" % n, self._end_stroke)
         for mod in ("Alt", "Option"):
@@ -414,7 +429,13 @@ class Editor(Painter):
 
     def _set_space(self, down):
         self._space = down
-        self.cv.configure(cursor="fleur" if down else {"place": "crosshair", "select": "arrow"}.get(self.tool, "X_cursor"))
+        self._set_cursor()
+
+    def _set_cursor(self):
+        """The pointer says what a drag would do: a hand while the view is being moved."""
+        moving = self._space or self._pan is not None
+        self.cv.configure(cursor="fleur" if moving else
+                          {"place": "crosshair", "select": "arrow"}.get(self.tool, "X_cursor"))
 
     # ------------------------------------------------------------------ coordinates
     def _world(self, e):
@@ -652,13 +673,14 @@ class Editor(Painter):
                                  outline=ui.GREEN if self.tool == "place" else ui.RED, tags="ghost")
         self._status("column %d, row %d" % (wx // GRID, wy // GRID))
 
-    def _press(self, e, erase=False, left=False):
+    def _press(self, e, erase=False, left=False, pan=False):
         self.cv.focus_set()
         if self.help_open:
             self.toggle_help()
             return
-        if self._space:
+        if pan or self._space:
             self._pan = (e.x, e.y, self.left, self.top)
+            self._set_cursor()
             return
         if self.tool == "select" and (left or not erase):    # (Shift + left adds to the selection there)
             self._select_press(e)
@@ -691,7 +713,9 @@ class Editor(Painter):
                 self._sync_objects()
 
     def _end_stroke(self, _e):
-        self._pan = None
+        moved, self._pan = self._pan, None
+        if moved:
+            self._set_cursor()
         if self._sel:
             self._select_release()
         if self._stroke:
@@ -754,7 +778,7 @@ class Editor(Painter):
 
     def _set_tool(self, tool):
         self.tool = tool
-        self.cv.configure(cursor={"place": "crosshair", "select": "arrow"}.get(tool, "X_cursor"))
+        self._set_cursor()
         self.cv.delete("ghost")
         if tool != "select":
             self._set_selection([])

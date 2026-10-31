@@ -688,6 +688,71 @@ class EditorSelectTool(unittest.TestCase):
         self.assertEqual(self.chosen(), [105.0, 225.0])
 
 
+class EditorMouseNavigation(unittest.TestCase):
+    """Getting around with an ordinary mouse, in a real editor: a right drag moves the
+    view (no trackpad needed) and Shift + left erases."""
+
+    def setUp(self):
+        import tkinter as tk
+        import types
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest("no display: %s" % exc)
+        self.addCleanup(self.root.destroy)
+        from gd import editor_tk
+        host = types.SimpleNamespace(play_level=lambda *a, **k: None, editor_closed=lambda: None, quit=lambda: None)
+        self.root.geometry("1320x820")
+        self.ed = ed = editor_tk.Editor(self.root, host)
+        self.addCleanup(lambda: setattr(ed.doc, "dirty", False))      # nothing to save from a test
+        ed.frame.pack(fill="both", expand=True)
+        self.root.update()
+        ed.refresh_all()
+        ed.doc.place(1, 105, 45)
+        ed._sync_objects()
+        self.root.update()
+
+    def screen(self, x, y):
+        ed = self.ed
+        return int(x * ed.zoom - ed.left), int(-y * ed.zoom - ed.top)
+
+    def mouse(self, kind, sx, sy, state=0, **kw):
+        self.ed.cv.event_generate(kind, x=sx, y=sy, state=state, **kw)
+        self.root.update()
+
+    def test_a_right_drag_moves_the_view_and_erases_nothing(self):
+        from gd.editor_tk import RIGHT_DRAG_PANS
+        if not RIGHT_DRAG_PANS:
+            self.skipTest("on a Mac the right button erases, as it always has")
+        ed = self.ed
+        left, top = ed.left, ed.top
+        self.mouse("<ButtonPress-3>", 400, 300, button=3)
+        self.mouse("<B3-Motion>", 340, 260, state=0x400)       # button 3 is held
+        self.assertEqual(ed.cv.cget("cursor"), "fleur", "the pointer says the view is moving")
+        self.mouse("<ButtonRelease-3>", 340, 260, button=3)
+        self.assertEqual((ed.left, ed.top), (left + 60, top + 40), "the view followed the drag")
+        self.assertEqual(len(ed.doc.objects), 1, "a right drag never erases")
+        self.assertEqual(ed.cv.cget("cursor"), "crosshair", "and the pointer goes back to building")
+
+    def test_shift_left_erases_while_building(self):
+        ed = self.ed
+        x, y = self.screen(105, 45)
+        self.mouse("<ButtonPress-1>", x, y, state=1, button=1)
+        self.mouse("<ButtonRelease-1>", x, y, state=1, button=1)
+        self.assertEqual(len(ed.doc.objects), 0, "Shift + left took the object out")
+
+    def test_space_and_drag_still_moves_the_view(self):
+        ed = self.ed
+        left, top = ed.left, ed.top
+        ed._set_space(True)
+        self.mouse("<ButtonPress-1>", 400, 300, button=1)
+        self.mouse("<B1-Motion>", 380, 290, state=0x100)
+        self.mouse("<ButtonRelease-1>", 380, 290, button=1)
+        ed._set_space(False)
+        self.assertEqual((ed.left, ed.top), (left + 20, top + 10))
+        self.assertEqual(len(ed.doc.objects), 1, "nothing was placed or erased")
+
+
 class EditorTriggersAndDecoration(unittest.TestCase):
     """The editor's Triggers and Decoration tabs and its properties window (the logic)."""
 

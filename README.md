@@ -508,7 +508,7 @@ always says what the current tool does.
 | Input | Action |
 |---|---|
 | left click / drag | place the selected object (snaps to the 30-unit grid) |
-| right click / drag, or Shift + left (except with the Select tool) | erase |
+| Shift + left click / drag, or the Erase tool | erase (on a Mac, right click / drag does it too) |
 | Alt/Option + click | pick the object under the cursor as the brush |
 | **1** - **9**, **0**, Tab | choose a tile in the open tab, next tab |
 | **R**, **F**, **V** | rotate the brush 90 degrees, flip X, flip Y |
@@ -520,8 +520,8 @@ always says what the current tool does.
 | Esc | deselect (again: back to building) |
 | **G** | grid size: 30, 15, 7.5 or 3.75 units (the button shows which) |
 | **I** | properties: groups, and what a trigger or teleport portal does |
-| wheel / trackpad, arrows, **A** / **D**, Home / End, the scrollbar | scroll |
-| Space + drag | pan |
+| wheel / trackpad, arrows, **A** / **D**, Home / End, the scrollbar | scroll (Shift + wheel goes sideways) |
+| right click + drag, or Space + drag | move the view, both ways at once - no trackpad needed (on a Mac, Space + drag: right click erases there) |
 | **-** / **=** | zoom |
 | **H** | hitboxes on/off (on by default) |
 | **P** | play-test the level (in the same window; nothing is saved to your progress) |
@@ -656,7 +656,7 @@ The loaders look at file **content**, so the extension does not have to be right
 | `.gmd` | GDShare export: RobTop's plist dialect, full `<plist>` or bare `<d>`; short or long tag names |
 | `.gmd2` | GDShare v2: ZIP containing `level.data` |
 | `.lvl` | GDShare legacy: zlib/gzip-compressed dictionary |
-| `CCLocalLevels.dat` | Windows/Android saves (XOR 11 + base64 + gzip). macOS saves (AES-256-ECB) are decrypted with the system `openssl` |
+| `CCLocalLevels.dat` | Windows/Android saves (XOR 11 + base64 + gzip). macOS saves (AES-256-ECB) are decrypted by Windows' own crypto library, or by the system `openssl` elsewhere |
 | bare level string | `H4sI...` (base64 + gzip) or already decoded text |
 | `.json` | any JSON carrying the string in a `data` / `levelString` / `k4` field |
 | server reply | a raw `downloadGJLevel22` response |

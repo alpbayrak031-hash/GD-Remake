@@ -30,6 +30,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import zipfile
 import zlib
 
@@ -217,6 +218,18 @@ def _decode_windows_save(data):
 
 
 def _decode_mac_save(data):
+    out = _aes_ecb_decrypt(data)
+    if out and 0 < out[-1] <= 16:              # PKCS#7 padding
+        out = out[:-out[-1]]
+    return out.decode("utf-8", "replace")
+
+
+def _aes_ecb_decrypt(data):
+    """The save, undone with whatever this computer can do AES-256-ECB with: on Windows the
+    crypto library in Windows itself, so no PC needs anything installed; everywhere else
+    `openssl`, which every Mac ships."""
+    if sys.platform.startswith("win"):
+        return _aes_ecb_windows(data)
     exe = shutil.which("openssl")
     if not exe:
         raise LevelFormatError("this looks like a macOS save (AES); `openssl` is needed to decrypt it")
@@ -224,10 +237,38 @@ def _decode_mac_save(data):
                           input=data, capture_output=True)
     if proc.returncode != 0:
         raise LevelFormatError("openssl could not decrypt the save: %s" % proc.stderr.decode(errors="replace").strip())
-    out = proc.stdout
-    if out and 0 < out[-1] <= 16:              # PKCS#7 padding
-        out = out[:-out[-1]]
-    return out.decode("utf-8", "replace")
+    return proc.stdout
+
+
+def _aes_ecb_windows(data):
+    """AES-256-ECB through bcrypt.dll, the crypto library Windows comes with.  No padding
+    is taken off here, which is what openssl's -nopad means above; the caller does it."""
+    import ctypes
+
+    def check(status, what):
+        if status:                             # anything but STATUS_SUCCESS
+            raise LevelFormatError("Windows could not decrypt the save (%s: 0x%08X)" % (what, status & 0xFFFFFFFF))
+
+    try:
+        bcrypt = ctypes.WinDLL("bcrypt.dll")
+    except OSError as exc:
+        raise LevelFormatError("this looks like a macOS save (AES) and Windows' own crypto is missing: %s" % exc)
+    alg, key = ctypes.c_void_p(), ctypes.c_void_p()
+    check(bcrypt.BCryptOpenAlgorithmProvider(ctypes.byref(alg), "AES", None, 0), "opening AES")
+    try:
+        mode = ctypes.create_unicode_buffer("ChainingModeECB")
+        check(bcrypt.BCryptSetProperty(alg, "ChainingMode", mode, ctypes.sizeof(mode), 0), "asking for ECB")
+        check(bcrypt.BCryptGenerateSymmetricKey(alg, ctypes.byref(key), None, 0,
+                                                _MAC_SAVE_KEY, len(_MAC_SAVE_KEY), 0), "making the key")
+        try:
+            out, written = ctypes.create_string_buffer(len(data)), ctypes.c_ulong(0)
+            check(bcrypt.BCryptDecrypt(key, data, len(data), None, None, 0,
+                                       out, len(out), ctypes.byref(written), 0), "decrypting")
+            return out.raw[:written.value]
+        finally:
+            bcrypt.BCryptDestroyKey(key)
+    finally:
+        bcrypt.BCryptCloseAlgorithmProvider(alg, 0)
 
 
 # ----------------------------------------------------------------- sniffing loader

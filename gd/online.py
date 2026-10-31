@@ -47,6 +47,8 @@ def cache_folder():
 
 
 CURL = "/usr/bin/curl"
+# A windowed Windows program has no console, and without this every curl would flash one up.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _send(path, body, timeout):
@@ -59,7 +61,7 @@ def _send(path, body, timeout):
                "--max-time", str(int(timeout)), "--max-filesize", str(MAX_REPLY), "-w", "\n%{http_code}", url]
         try:
             done = subprocess.run(cmd, input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  timeout=timeout + 5)
+                                  timeout=timeout + 5, creationflags=NO_WINDOW)
         except subprocess.TimeoutExpired:
             raise OSError("timed out")
         if done.returncode != 0:
