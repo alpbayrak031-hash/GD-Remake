@@ -43,7 +43,7 @@ from .paths import SAVEDATA
 from .sim import Simulation
 
 DEFAULT_PATH = os.path.join(SAVEDATA, "timing.json")
-VERSION = 7                      # raise it when the method changes: old results are then measured again
+VERSION = 8                      # raise it when the method changes: old results are then measured again
 # input grids tried, coarsest first, in ticks of 1/240 s: 200 ms ... 4 ms (a single physics step)
 CHUNKS = (48, 40, 32, 28, 24, 20, 16, 14, 12, 10, 8, 7, 6, 5, 4, 3, 2, 1)
 MAX_NODES = 150000               # search budget per attempt

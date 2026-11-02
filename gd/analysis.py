@@ -45,7 +45,8 @@ def _signature(sim):
     ago...), what the triggers have done and exactly which objects were used.  An unequal
     signature is always safe: it only means a run is simulated a little further."""
     return (_player_state(sim.player), None if sim.player2 is None else _player_state(sim.player2),
-            sim.floor, sim.ceiling, frozenset(sim.destroyed), _trigger_state(sim))
+            sim.floor, sim.ceiling, None if sim.player2 is None else sim.dual_y,
+            frozenset(sim.destroyed), _trigger_state(sim))
 
 
 def _player_state(p):

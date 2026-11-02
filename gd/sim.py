@@ -73,6 +73,7 @@ class Simulation:
         self._launch = None
         self._pads_now = set()            # multi-activate pads touched in the current collision check
         self.player2 = None               # the second icon while dual mode is on
+        self.dual_y = None                # where the dual portal that started it is (see _dual)
         p = self.player = Player(self)
         p.fix_gravity_bug = lv.fix_gravity_bug
         p.mode = Mode(lv.start_mode)
@@ -94,11 +95,11 @@ class Simulation:
         return (self.tick, self.button, self.finished, set(self.destroyed), self.floor,
                 self.ceiling, self.player.copy(), len(self.log),
                 self.player2.copy() if self.player2 is not None else None,
-                self.trig.snapshot() if self.trig is not None else None)
+                self.trig.snapshot() if self.trig is not None else None, self.dual_y)
 
     def restore(self, snap):
         (self.tick, self.button, self.finished, destroyed, self.floor, self.ceiling,
-         player, log_len, player2, trig) = snap
+         player, log_len, player2, trig, self.dual_y) = snap
         self.destroyed = set(destroyed)
         self.player = player.copy()
         self.player2 = player2.copy() if player2 is not None else None
@@ -219,10 +220,11 @@ class Simulation:
                 p.can_jump, p.dead)
 
     # ------------------------------------------------------------------ dual mode
-    # ESTIMATE throughout: no decompilation I could find covers dual mode.  What is
-    # modelled is the game as it plays: the dual portal adds a second icon at the same
-    # spot with the opposite gravity, the play area gets a floor and a ceiling like a
-    # flying mode's, one button controls both icons, losing either one ends the attempt,
+    # ESTIMATE, except where leaving dual mode puts the play area (below): no decompilation
+    # I could find covers the rest.  What is modelled is the game as it plays: the dual
+    # portal adds a second icon at the same spot with the opposite gravity, the play area
+    # gets a floor and a ceiling like a flying mode's, one button controls both icons,
+    # losing either one ends the attempt,
     # and portals change only the icon that touches them.  A mode portal only one icon
     # touches does not move that floor and ceiling: levels are built that way - in Dear
     # Nostalgists (ID 18735780) the bottom icon takes a robot portal 90 units below the
@@ -231,6 +233,15 @@ class Simulation:
     # dual portal is touched, and portals the first touches in that same step (a mode portal
     # stacked on the dual portal) do not change it: the same level stacks speed, dual and
     # cube portals and later gives the top icon a cube portal of its own.
+    # Leaving dual mode builds the play area for the mode the player is left in around the
+    # DUAL portal, not around the dual-off one.  iArtie/GD-2.2081-Decompiled
+    # GJBaseGameLayer::toggleDualMode: the dual-off ("solo") portal is not made the layer's
+    # m_lastActivatedPortal1, and the updateDualGround that follows builds the ground from
+    # that portal - still the dual portal.  gdsolver (dp/src/dp/step.hpp) measured the same
+    # in the game: after a dual ship section ends, GD "still reports [330,630], the
+    # ship-in-dual band".  Retro Circles (ID 14000484) needs it: its wave leaves dual mode
+    # at three stacked portals, and centring on the lowest of them dropped the floor 120
+    # units below the corridor, leaving an empty lane under the whole wave section.
     def _bounds_around(self, y, mode):
         bounds = _BOUNDS.get(mode)
         if bounds is None and self.player2 is not None:
@@ -248,6 +259,7 @@ class Simulation:
             q.can_jump = q.on_ground = q.is_jumping = False
             q.y_vel = 0.0
             self.player2 = q
+            self.dual_y = o.y
             self._bounds_around(o.y, p.mode)
             self._note("dual mode on")
         elif not o.arg and self.player2 is not None:
@@ -255,7 +267,7 @@ class Simulation:
             self.player2 = None
             if p is other:                             # the second icon reached it first: the first goes on
                 self.player.used = self.player.used | {o.uid}
-            self._bounds_around(o.y, self.player.mode)
+            self._bounds_around(o.y if self.dual_y is None else self.dual_y, self.player.mode)
             self._note("dual mode off")
 
     def digest(self, trace):

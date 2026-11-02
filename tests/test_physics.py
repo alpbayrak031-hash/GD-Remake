@@ -827,6 +827,24 @@ class DualMode(unittest.TestCase):
         self.assertIn("dual mode off", [t for _, t in sim.log])
         self.assertFalse(sim.dead)
 
+    def test_a_wave_leaving_dual_mode_keeps_the_dual_portals_floor_and_ceiling(self):
+        # the second wave flies up to the ceiling and meets a dual-off portal up there: GD
+        # builds the play area around the DUAL portal again (see Simulation._dual), so the
+        # floor does not jump to 120 under the first wave
+        sim = make(mode=4, build=lambda lv: [lv.add(self.DUAL_ON, 315, 45), lv.add(self.DUAL_OFF, 15 + 30 * 40, 285)])
+        run_until(self, sim, lambda s: s.player2 is not None)
+        bounds = (sim.floor, sim.ceiling)
+        self.assertEqual(bounds, (0.0, C.BOUNDS_SHIP))
+        snap = sim.snapshot()
+        sim.reset()
+        sim.restore(snap)                    # where the dual portal was is part of a snapshot
+        run_until(self, sim, lambda s: s.player2 is None)
+        self.assertEqual((sim.floor, sim.ceiling), bounds)
+        y = sim.player.y
+        steps(sim, 10)
+        self.assertFalse(sim.dead, sim.player.death_cause)
+        self.assertLess(abs(sim.player.y - y), 15.0, "the wave is not lifted onto a new floor")
+
     def test_snapshots_keep_the_second_icon(self):
         sim = self.level()
         run_until(self, sim, lambda s: s.player2 is not None)
