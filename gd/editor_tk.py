@@ -1210,6 +1210,9 @@ class Editor(Painter):
                 elif found["state"] == "glitch":
                     tight = ("There is no normal route, so this run uses the glitch: the push onto a block "
                              "just after a gravity switch.")
+                elif found["state"] == "route":
+                    tight = ("Its tightest jump is not rated: this route works when the button follows a %d ms "
+                             "grid from one starting point, not from every one." % found["ms"])
                 else:
                     tight = "No input is needed."
                 result["text"] = "The bot finished it with %d press%s. %s" % (presses, "" if presses == 1 else "es", tight)

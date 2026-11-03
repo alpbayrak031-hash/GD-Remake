@@ -242,7 +242,10 @@ def rate(level, chunks=(32, 24, 16, 12, 8, 6, 4), max_nodes=250000, info=None, c
 
     Requiring several phases matters: a single lucky grid alignment can make one tight
     jump look easy, three cannot.  If `info` is a dict it receives "limit_x": how far
-    the search got on the last grid that was too coarse, i.e. where the hardest spot is.
+    the search got on the last grid that was too coarse, i.e. where the hardest spot is,
+    and "route": (chunk, InputSequence) for the first route that finished the level on
+    any phase of any grid - kept as soon as it is found (even if the search is then
+    abandoned), because a grid that fails on its other phases still found a way through.
     `check` is handed to the solver (see autoplay.solve).
 
     strict=False allows held (buffered) jumps.  That is only meant for levels that cannot
@@ -278,6 +281,8 @@ def rate(level, chunks=(32, 24, 16, 12, 8, 6, 4), max_nodes=250000, info=None, c
             if seq is None:
                 limit_x = sim.solver_reach
                 return None, sim.solver_stalled
+            if info is not None and "route" not in info:
+                info["route"] = (chunk, seq)
             first = first or seq
         return first, False
 

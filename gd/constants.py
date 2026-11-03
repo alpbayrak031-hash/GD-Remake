@@ -9,6 +9,9 @@ GDP   camila314/gdp (branch 2.2) - decompiled 2.2 physics functions
 SIM   camila314/pathfinder -> gd-sim - a physics simulator validated against the
       game; used for hitbox tables and for behaviour the two decomps do not cover.
 DOCS  Wyliemaster/gddocs - level format documentation.
+DEC   iArtie/GD-2.2081-Decompiled - decompiled GD 2.2081 game layer (GJBaseGameLayer, ...).
+GDS   gdsolver/gdsolver (dp/src/dp/*.hpp) - a solver whose rules were read from the 2.2
+      exe or measured in the running game; used where DEC calls a function it lacks.
 MEM   Recalled from older (2.1) decompilations; not re-verified against 2.2.
 EST   Estimate / inference. Treat as "probably close", not as fact.
 
@@ -200,10 +203,15 @@ SLOPE_JUMP_CAP = 1.4        # ... capped at 1.4 * the normal jump velocity
 SLOPE_HAZARD_OFFSET = 4.0   # GDP GameObject::slopeYPos
 
 # --------------------------------------------------------------------------- level bounds
-BOUNDS_SHIP = 300.0         # SIM Vehicle bounds (ship, ufo, wave)
-BOUNDS_BALL = 240.0         # SIM Vehicle bounds (ball)
-BOUNDS_SPIDER = 240.0       # MEM GJBaseGameLayer::getGroundHeightForMode - unverified for 2.2
-BOUNDS_SWING = 300.0        # MEM, same caveat
+# How tall the flying-mode play area is (GJBaseGameLayer::getGroundHeightForMode).
+BOUNDS_SHIP = 300.0         # SIM Vehicle bounds (ship, ufo, wave); GDS bands.hpp reads the same from the exe
+BOUNDS_BALL = 240.0         # SIM Vehicle bounds (ball); GDS bands.hpp, same
+BOUNDS_SPIDER = 240.0       # MEM - unverified for 2.2.  GDS bands.hpp reads 270 for the spider (not adopted yet)
+BOUNDS_SWING = 300.0        # MEM; GDS bands.hpp reads the same from the exe
+BOUNDS_DUAL = 270.0         # GDS bands.hpp bandHeightDual: in dual mode, unless an icon is a ship, UFO or
+                            # wave (then BOUNDS_SHIP).  Measured there: cube [360,630] and ball [390,660]
+                            # in dual, ship [330,630] and UFO [390,690].  See Simulation._bounds_around.
+BOUNDS_GRID = 30.0          # DEC GJBaseGameLayer::animateInDualGroundNew: the floor snaps down to a block
 MAX_Y = 1476.3              # SIM Player::postCollision: dead if pos.y > 1476.3
 LEVEL_END_PADDING = 340.0   # MEM: level length = last object x + 340.  EST for 2.2.
 SECTION_SIZE = 100          # SIM Level::sectionSize ("sections are used just like real GD")

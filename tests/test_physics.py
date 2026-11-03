@@ -329,13 +329,15 @@ class Portals(unittest.TestCase):
         self.assertGreater(sim.player.y_vel, -2.108)             # gravity now pulls upward
 
     def test_ship_portal_and_bounds(self):
-        for portal_y, floor in ((45, 0.0), (345, 180.0)):
+        # iArtie/GD-2.2081-Decompiled animateInDualGroundNew: floor = floorf((y - 150) / 30) * 30.
+        # At y = 360 that is a whole 210; gd-sim's ceil form put it a block lower, at 180.
+        for portal_y, floor in ((45, 0.0), (345, 180.0), (360, 210.0)):
             sim = make(build=lambda b: b.add(13, 600, portal_y))
             airborne(sim, 590, portal_y, 6.0)
             p = steps(sim, 1)
             self.assertEqual(p.mode, Mode.SHIP)
             self.assertAlmostEqual(p.y_vel, (6.0 - 0.216) * 0.5, places=9)
-            self.assertEqual((sim.floor, sim.ceiling), (floor, floor + 300.0))   # gd-sim VehiclePortal
+            self.assertEqual((sim.floor, sim.ceiling), (floor, floor + 300.0))
 
     def test_ball_portal_bounds(self):
         sim = make(build=lambda b: b.add(47, 200, 45))
@@ -582,6 +584,66 @@ class Determinism(unittest.TestCase):
                 self.assertIn(word, seen)
 
 
+class Noclip(unittest.TestCase):
+    """Nothing kills the player; the steps in which something would have are counted."""
+
+    def spikes(self):
+        def b(lv):
+            lv.add(SPIKE, 15 + 30 * 10, 15)
+            lv.add(SPIKE, 15 + 30 * 30, 15)
+        return make(build=b)
+
+    def test_the_player_runs_through_and_each_hit_is_counted(self):
+        sim = self.spikes()
+        sim.set_noclip(True)
+        run_until(self, sim, lambda s: s.player.x > 30 * 32, limit=6000)
+        self.assertFalse(sim.dead)
+        self.assertEqual(sim.noclip_deaths, 2, "one for each spike")
+        self.assertGreater(sim.noclip_hit_ticks, 2, "each spike is in the way for several steps")
+        self.assertAlmostEqual(sim.noclip_accuracy, 100.0 * (sim.tick - sim.noclip_hit_ticks) / sim.tick)
+        sim.reset()
+        self.assertEqual((sim.noclip_hit_ticks, sim.noclip_deaths, sim.noclip_accuracy), (0, 0, 100.0))
+        self.assertTrue(sim.player.noclip, "the setting outlives a restart")
+
+    def test_off_the_same_spike_kills(self):
+        sim = self.spikes()
+        run_until(self, sim, lambda s: s.dead, limit=6000)
+        self.assertIn("hazard", sim.player.death_cause)
+
+    def test_a_wall_is_gone_through(self):
+        sim = make(build=lambda lv: [lv.block(10, r) for r in range(6)])
+        sim.set_noclip(True)
+        run_until(self, sim, lambda s: s.player.x > 30 * 12)
+        self.assertFalse(sim.dead)
+        self.assertEqual(sim.noclip_deaths, 1)
+
+
+class ObjectBoxes(unittest.TestCase):
+    """Where gd-sim's table was corrected from OpenGD's and the 2.2081 decompilation (gd/objects.py)."""
+
+    def box(self, oid, **kw):
+        lv = LevelBuilder()
+        lv.add(oid, 300, 150, **kw)
+        o = next(o for o in lv.level().objects if o.id == oid)
+        return o.kind, (o.minx, o.maxx, o.miny, o.maxy)
+
+    def test_the_pit_slopes_are_spike_slopes(self):
+        for oid, w in ((366, 30), (1723, 30), (367, 60), (1724, 60)):
+            kind, (minx, maxx, _miny, _maxy) = self.box(oid)
+            self.assertEqual((kind, maxx - minx), ("slope_hazard", w), oid)
+
+    def test_small_spikes_off_centre(self):
+        self.assertEqual(self.box(422)[1], (292.0, 298.0, 147.8, 152.2))          # 5 to the left
+        self.assertEqual(self.box(244)[1], (302.0, 308.0, 146.6, 153.4))          # 5 to the right
+        self.assertEqual(self.box(422, flip_x=True)[1], (302.0, 308.0, 147.8, 152.2))
+        kind, (minx, maxx, miny, maxy) = self.box(422, rot=90)                    # turned with the object
+        self.assertAlmostEqual(minx, 297.8)
+        self.assertAlmostEqual(maxy, 158.0)
+
+    def test_the_small_invisible_plank_lies_flat(self):
+        self.assertEqual(self.box(204)[1], (292.5, 307.5, 146.0, 154.0))
+
+
 class Hitboxes(unittest.TestCase):
     """The player's three boxes, and the rotation that turns one of them."""
 
@@ -775,9 +837,9 @@ class DualMode(unittest.TestCase):
         run_until(self, sim, lambda s: s.player2 is not None)
         p, q = sim.player, sim.player2
         self.assertEqual((q.upside_down, p.upside_down, q.mode, q.x), (True, False, p.mode, p.x))
-        self.assertEqual((sim.floor, sim.ceiling), (0.0, C.BOUNDS_SHIP), "the play area gets a ceiling")
+        self.assertEqual((sim.floor, sim.ceiling), (0.0, C.BOUNDS_DUAL), "the play area gets a ceiling")
         run_until(self, sim, lambda s: s.player2.can_jump)          # it falls up and lands on the ceiling
-        self.assertAlmostEqual(q.y, C.BOUNDS_SHIP - 15.0)
+        self.assertAlmostEqual(q.y, C.BOUNDS_DUAL - 15.0)
         self.assertIn("dual mode on", [t for _, t in sim.log])
 
     def test_one_button_drives_both(self):
@@ -790,22 +852,39 @@ class DualMode(unittest.TestCase):
         self.assertLess(q.y, y2 - 20, "the second jumps down, towards its own floor")
 
     def test_losing_either_icon_ends_the_attempt(self):
-        sim = self.level(lambda lv: lv.spike(20, row=9, down=True) if hasattr(lv, "spike") else
-                         lv.add(SPIKE, 15 + 30 * 20, 285, rot=180))
+        sim = self.level(lambda lv: lv.add(SPIKE, 15 + 30 * 20, 255, rot=180))   # under the 270 ceiling
         run_until(self, sim, lambda s: s.dead, limit=4000)
         self.assertTrue(sim.player.dead)
         self.assertIn("second icon", sim.player.death_cause)
         self.assertLess(sim.player.x, 30 * 21)
 
-    def test_a_mode_portal_one_icon_takes_does_not_move_the_floor_and_ceiling(self):
-        # only the first icon (on the floor) meets this ship portal, low down
+    def test_the_play_area_is_270_tall_in_dual_mode_unless_an_icon_flies(self):
+        # gdsolver bands.hpp bandHeightDual, measured in GD for cube, ball, ship and UFO
+        for mode, height in ((0, C.BOUNDS_DUAL), (2, C.BOUNDS_DUAL), (5, C.BOUNDS_DUAL),
+                             (1, C.BOUNDS_SHIP), (3, C.BOUNDS_SHIP), (4, C.BOUNDS_SHIP)):
+            sim = make(mode=mode, build=lambda lv: lv.add(self.DUAL_ON, 315, 45))
+            run_until(self, sim, lambda s: s.player2 is not None)
+            self.assertEqual((sim.floor, sim.ceiling), (0.0, height), Mode(mode).name)
+
+    def test_a_mode_portal_one_icon_takes_changes_only_the_height(self):
+        # only the first icon (on the floor) meets this ship portal, low down: one icon now
+        # flies, so the play area grows to a ship's, still standing on the dual portal's floor
         sim = self.level(lambda lv: lv.add(13, 15 + 30 * 20, 45))
         run_until(self, sim, lambda s: s.player2 is not None)
-        bounds = (sim.floor, sim.ceiling)
+        floor = sim.floor
         run_until(self, sim, lambda s: s.player.x > 30 * 21)
         self.assertEqual(sim.player.mode, Mode.SHIP)
         self.assertEqual(sim.player2.mode, Mode.CUBE, "only the icon that touched it")
-        self.assertEqual((sim.floor, sim.ceiling), bounds, "the play area stays where the dual portal put it")
+        self.assertEqual((sim.floor, sim.ceiling), (floor, floor + C.BOUNDS_SHIP))
+
+    def test_a_mode_portal_in_dual_mode_does_not_move_the_play_area(self):
+        # the second icon rides the 270 ceiling (y 255) into a ship portal up there: centred on
+        # that portal the play area would be 90..390, but it stays on the dual portal's floor
+        sim = self.level(lambda lv: lv.add(13, 15 + 30 * 20, 255))
+        run_until(self, sim, lambda s: s.player.x > 30 * 21)
+        self.assertEqual((sim.player.mode, sim.player2.mode), (Mode.CUBE, Mode.SHIP))
+        self.assertEqual((sim.floor, sim.ceiling), (0.0, C.BOUNDS_SHIP))
+        self.assertFalse(sim.dead, sim.player.death_cause)
 
     def test_a_mode_portal_stacked_on_the_dual_portal_changes_only_the_first_icon(self):
         # level order: dual portal, then a ship portal at the same spot (as levels stack them)
@@ -858,7 +937,7 @@ class DualMode(unittest.TestCase):
 
     def test_the_bot_can_play_dual(self):
         from gd.autoplay import solve
-        sim = self.level(lambda lv: [lv.add(SPIKE, 15 + 30 * 20, 285, rot=180), lv.add(SPIKE, 15 + 30 * 30, 15)])
+        sim = self.level(lambda lv: [lv.add(SPIKE, 15 + 30 * 20, 255, rot=180), lv.add(SPIKE, 15 + 30 * 30, 15)])
         seq = solve(sim, chunk=6, max_nodes=200000)
         self.assertIsNotNone(seq)
         sim.reset()

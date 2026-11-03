@@ -42,16 +42,17 @@ def wall(b):
         b.block(15, row)
 
 
-def needle():
+def needle(shift=0):
     """A level a player reported the bot could not solve although it can be done: at
     half speed, a small spike on the floor and, one column on, a small spike hanging
-    from a pillar.  Exactly one of the 240 steps in a second works for the jump."""
+    from a pillar.  Exactly one of the 240 steps in a second works for the jump.
+    `shift` moves the spikes and the pillar that many units on."""
     b = LevelBuilder()
     b.add(200, 15, 45)                               # 0.5x speed portal, touched at the start
-    b.add(39, 225, 7)                                # small spike on the floor
+    b.add(39, 225 + shift, 7)                        # small spike on the floor
     for row in range(2, 6):
-        b.block(8, row)                              # the pillar
-    b.add(39, 255, 53, rot=180)                      # small spike under it
+        b.add(1, 255 + shift, 15 + 30 * row)         # the pillar
+    b.add(39, 255 + shift, 53, rot=180)              # small spike under it
     return b.level("needle")
 
 
@@ -92,6 +93,19 @@ class Measure(unittest.TestCase):
             self.assertTrue(Simulation(level).run(moved).dead)
         # and this is why a grid of 2 ticks (8 ms) or more cannot find it
         self.assertEqual(rate(level, chunks=(6, 3, 2)), (None, None))
+
+    def test_a_route_that_works_from_one_grid_phase_is_kept(self):
+        # Three units on, the needle's one working step is 140: a 4-tick grid meets it from
+        # its first phase and from no other.  That is no rating - but it is a way through,
+        # and it used to be thrown away (long levels the bot could play read "no way through")
+        level = needle(shift=3)
+        result, inputs = timing.search(level, chunks=(4,))
+        self.assertEqual(result, {"state": "route", "ticks": 4, "ms": 17})
+        self.assertEqual(timing.describe(result), ("route found, unrated", None))
+        self.assertTrue(Simulation(level).run(inputs).finished)
+        info = {}
+        self.assertEqual(rate(level, chunks=(4,), info=info), (None, None))
+        self.assertEqual(info["route"][0], 4)
 
     def test_a_level_that_needs_a_held_jump_still_gets_a_number(self):
         # Reported by a player (it used to read "needs a held jump"): at half speed, a saw

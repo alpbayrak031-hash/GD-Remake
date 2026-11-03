@@ -36,6 +36,7 @@ from .triggers import Run
 
 _BOUNDS = {Mode.SHIP: C.BOUNDS_SHIP, Mode.UFO: C.BOUNDS_SHIP, Mode.WAVE: C.BOUNDS_SHIP,
            Mode.SWING: C.BOUNDS_SWING, Mode.BALL: C.BOUNDS_BALL, Mode.SPIDER: C.BOUNDS_SPIDER}
+_DUAL_FLYING = (Mode.SHIP, Mode.UFO, Mode.WAVE)    # decompiled PlayerObject::isFlying (see _bounds_around)
 _FLIP_GRACE_TICKS = C.FLIP_GRACE_SECONDS * C.TPS
 _SPIDER_GRACE_TICKS = C.SPIDER_GRACE_SECONDS * C.TPS
 _SOLIDS = (O.SOLID, O.BREAKABLE)
@@ -60,6 +61,7 @@ class Simulation:
         # OSGD collisionCheckObjects tests slopes against a rect twice their size
         self._margin = max([max(o.w, o.h) / 2.0 for o in slopes] + [2.0])
         self.trig = Run(self, level.triggers) if level.triggers is not None else None   # gd/triggers.py
+        self.noclip = False               # see set_noclip
         self.reset()
 
     # ------------------------------------------------------------------ lifecycle
@@ -90,6 +92,24 @@ class Simulation:
         self.ceiling = _BOUNDS.get(p.mode)
         if self.trig is not None:
             self.trig.reset()
+        p.noclip = self.noclip
+        self.noclip_hit_ticks = 0         # steps in which an icon would have died
+        self.noclip_deaths = 0            # ... counted once for each run of such steps
+        self._noclip_was_hit = False
+
+    def set_noclip(self, on):
+        """Noclip: nothing kills the player; every step in which something would have is
+        counted instead (noclip_accuracy).  Only ever on in play, never for the bot."""
+        self.noclip = on
+        for q in (self.player, self.player2):
+            if q is not None:
+                q.noclip = on
+
+    @property
+    def noclip_accuracy(self):
+        """Percent of the steps so far in which nothing would have killed the player - what
+        noclip-accuracy readouts in GD mods show."""
+        return 100.0 * (self.tick - self.noclip_hit_ticks) / self.tick if self.tick else 100.0
 
     def snapshot(self):
         return (self.tick, self.button, self.finished, set(self.destroyed), self.floor,
@@ -187,6 +207,16 @@ class Simulation:
                 break
         if self.trig is not None and not p.dead:
             self.trig.step(p)
+        if self.noclip:
+            hit = False
+            for q in (self.player, self.player2):
+                if q is not None and q.noclip_hit:
+                    q.noclip_hit, hit = False, True
+            if hit:
+                self.noclip_hit_ticks += 1
+                if not self._noclip_was_hit:
+                    self.noclip_deaths += 1
+            self._noclip_was_hit = hit
         self.tick += 1
         if not p.dead and p.x >= self.level.end_x:
             self.finished = True
@@ -220,13 +250,15 @@ class Simulation:
                 p.can_jump, p.dead)
 
     # ------------------------------------------------------------------ dual mode
-    # ESTIMATE, except where leaving dual mode puts the play area (below): no decompilation
-    # I could find covers the rest.  What is modelled is the game as it plays: the dual
-    # portal adds a second icon at the same spot with the opposite gravity, the play area
-    # gets a floor and a ceiling like a flying mode's, one button controls both icons,
-    # losing either one ends the attempt,
-    # and portals change only the icon that touches them.  A mode portal only one icon
-    # touches does not move that floor and ceiling: levels are built that way - in Dear
+    # ESTIMATE, except where the play area goes (here and in _bounds_around): no
+    # decompilation I could find covers the rest.  What is modelled is the game as it
+    # plays: the dual portal adds a second icon at the same spot with the opposite
+    # gravity, the play area gets a floor and a ceiling like a flying mode's, one button
+    # controls both icons, losing either one ends the attempt,
+    # and portals change only the icon that touches them.  A mode portal in dual mode does
+    # not move that floor and ceiling, only the play area's height can change (see
+    # _bounds_around): gdsolver (dp/src/dp/step.hpp) measured that "inside a dual the
+    # reference y stays the dual portal's", and levels are built that way - in Dear
     # Nostalgists (ID 18735780) the bottom icon takes a robot portal 90 units below the
     # dual portal, and re-centring there would crush the top icon into the blocks it is
     # meant to run along.  The second icon starts as a copy of the first at the moment the
@@ -242,14 +274,31 @@ class Simulation:
     # ship-in-dual band".  Retro Circles (ID 14000484) needs it: its wave leaves dual mode
     # at three stacked portals, and centring on the lowest of them dropped the floor 120
     # units below the corridor, leaving an empty lane under the whole wave section.
+    #
+    # The play area around a portal at height y, for a mode.  iArtie/GD-2.2081-Decompiled
+    # GJBaseGameLayer::animateInDualGroundNew: floor = floorf((y - H/2) / 30) * 30, at least
+    # the ground (90 in GD's world coordinates, 0 here), and the ceiling H above it.  gd-sim
+    # (VehiclePortal.cpp) wrote this as 30 * ceil((y - H/2 - 30) / 30), which is the same
+    # except when y - H/2 is a whole number of blocks: there it put the floor a block too
+    # low (a ship portal at y = 360 got 180..480; GD gives 210..510).  gdsolver
+    # (dp/src/dp/bands.hpp) read the floorf form from the exe too and checked it on 18
+    # portals.  H is the mode's height (getGroundHeightForMode, C.BOUNDS_*), but in dual mode
+    # it is C.BOUNDS_DUAL unless either icon is a ship, UFO or wave: gdsolver's bandHeightDual,
+    # measured for cube, ball, ship and UFO, and matching the decompiled
+    # PlayerObject::isFlying (ship, UFO, wave).  So a cube, robot or ball in dual mode gets
+    # 270; a swing or spider in dual mode is an ESTIMATE that follows the same rule.  Not
+    # modelled: a camera trigger's "disable grid snap" skips the snap (decompiled), and a
+    # Free Mode portal leaves the play area alone (gdsolver).
     def _bounds_around(self, y, mode):
-        bounds = _BOUNDS.get(mode)
-        if bounds is None and self.player2 is not None:
-            bounds = C.BOUNDS_SHIP                      # a cube or robot in dual mode still gets a ceiling
+        if self.player2 is not None:
+            flies = self.player.mode in _DUAL_FLYING or self.player2.mode in _DUAL_FLYING
+            bounds = C.BOUNDS_SHIP if flies else C.BOUNDS_DUAL
+        else:
+            bounds = _BOUNDS.get(mode)
         if bounds is None:
             self.floor, self.ceiling = 0.0, None
         else:
-            self.floor = max(0.0, 30.0 * math.ceil((y - (bounds / 2.0 + 30.0)) / 30.0))
+            self.floor = max(0.0, C.BOUNDS_GRID * math.floor((y - bounds / 2.0) / C.BOUNDS_GRID))
             self.ceiling = self.floor + bounds
 
     def _dual(self, p, o):
@@ -430,9 +479,9 @@ class Simulation:
             if p.set_mode(mode):
                 self._note("mode -> %s" % mode.name.lower())
             # gd-sim VehiclePortal.cpp: the play area is re-centred on every mode portal -
-            # but not in dual mode, where it stays where the dual portal put it (see below)
-            if self.player2 is None:
-                self._bounds_around(o.y, mode)
+            # but not in dual mode, where it stays on the dual portal and only its height
+            # follows the icons' modes (see _dual and _bounds_around)
+            self._bounds_around(o.y if self.player2 is None else self.dual_y, mode)
         elif kind == O.PORTAL_DUAL:
             p.used = p.used | {o.uid}
             self._dual(p, o)

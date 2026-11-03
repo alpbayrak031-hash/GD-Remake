@@ -27,7 +27,18 @@ Sources
     87 multi trigger, 35 opacity, 71 follow group, 72 / 73 x / y mod) and its easing list
     (0 none ... 18 back out).
   * Offsets are stored in game units (30 per block): SPWN's standard library writes
-    MOVE_X as "units (10 per grid square) * 3" (Spu7Nix/SPWN-language, std/group.spwn).
+    MOVE_X as "units (10 per grid square) * 3" (Spu7Nix/SPWN-language, std/group.spwn),
+    and the game saves m_moveOffset as it is ("Small Step", key 393, only changes the
+    editor's step) - iArtie/GD-2.2081-Decompiled EffectGameObject's save string.
+  * Locks, from that decompilation (EffectGameObject's save string for the keys: 141/142
+    lock to camera x/y, 143/144 the lock's x/y mod, 544 silent; GJBaseGameLayer::
+    triggerMoveCommand; GJEffectManager::prepareMoveActions; GroupCommandObject2::step):
+    each axis is its own - a lock replaces that axis's eased offset with the player's (or
+    camera's) movement on that step times its mod, the other axis still eases to its
+    offset; a duration of exactly -1 never ends; a silent move lands at once.  Lock to
+    camera X is simulated as lock to player X, as gdsolver (gdsolver/gdsolver,
+    dp/src/dp/triggers.hpp --camlockx) measured them to be while the camera follows the
+    player; lock to camera Y is not simulated (the camera's y does not follow the player's).
   * The easing curves are cocos2d-x's (CCActionEase / CCTweenFunction), the engine GD is
     built on.  The easing rate is the exponent of the In/Out curves and the period of the
     elastic ones.
@@ -45,15 +56,15 @@ ESTIMATES - nothing here is decompiled:
   * an object in several groups is moved by every move aimed at any of them, and is
     on or off according to the most recent toggle aimed at any of them; a trigger
     inside a group that is switched off does not fire
-  * lock to player X/Y follows the player's own movement and ignores that offset; a
-    negative duration counts as zero
+  * a negative duration other than -1 counts as zero
   * moving blocks do not carry the player along: the player is only stopped or killed by
     them where they are on each step
   * the default easing rate, when a level does not store one, is 2
   * a follow copies moves as they happen (a chain of follows is followed up to 8 deep);
     a faded group is drawn hidden below 30 % opacity and as normal above it
 Not simulated: rotate, pulse, colour, count, item and collision triggers, toggle orbs,
-camera triggers, 2.2 area and keyframe triggers.
+camera triggers, 2.2 area and keyframe triggers; a move's 2.2 target, direction and
+dynamic modes (keys 100, 394, 397) and lock to camera Y.
 """
 import bisect
 import math
@@ -170,7 +181,8 @@ def ease(kind, rate, t):
 # ---------------------------------------------------------------------- level side
 class Trigger:
     __slots__ = ("uid", "id", "x", "y", "groups", "target", "how", "multi", "dx", "dy", "ticks",
-                 "easing", "rate", "lock_x", "lock_y", "on", "delay", "half", "opacity", "source", "mod_x", "mod_y")
+                 "easing", "rate", "lock_x", "lock_y", "on", "delay", "half", "opacity", "source", "mod_x", "mod_y",
+                 "forever")
 
     def __repr__(self):
         return "<%s trigger #%d at x=%.0f -> group %d>" % (NAMES[self.id], self.uid, self.x, self.target)
@@ -196,6 +208,13 @@ def parse(raw, oid, x, y, groups, num):
     t.opacity = max(0.0, min(1.0, num(raw, 35, 1.0)))
     t.source = int(num(raw, 71))
     t.mod_x, t.mod_y = num(raw, 72, 1.0), num(raw, 73, 1.0)
+    t.forever = False
+    if oid == MOVE:
+        t.lock_x = t.lock_x or bool(num(raw, 141))           # lock to camera X: as lock to player X
+        t.mod_x, t.mod_y = num(raw, 143, 1.0) or 1.0, num(raw, 144, 1.0) or 1.0
+        t.forever = (t.lock_x or t.lock_y) and num(raw, 10) == -1.0
+        if num(raw, 544):                                     # silent: straight to the offset
+            t.ticks, t.lock_x, t.lock_y, t.forever = 0, False, False, False
     if oid == FOLLOW and t.source <= 0:
         return None
     return t
@@ -453,15 +472,19 @@ class Run:
         for t, done in self.moves:
             done += 1
             total = max(1, t.ticks)
-            if t.lock_x or t.lock_y:
-                self._move(t.target, p.x - last[0] if t.lock_x else 0.0, p.y - last[1] if t.lock_y else 0.0)
-            else:
+            mx = my = 0.0
+            if done <= total and not (t.lock_x and t.lock_y):
                 # the curve is pinned to 0 and 1 at the ends, so a move lands exactly on its offset
                 # (cocos2d's exponential curves stop 0.05 - 0.1 % short of them)
                 a = 0.0 if done == 1 else ease(t.easing, t.rate, (done - 1) / float(total))
                 b = 1.0 if done >= total else ease(t.easing, t.rate, done / float(total))
-                self._move(t.target, t.dx * (b - a), t.dy * (b - a))
-            if done < total:
+                mx, my = t.dx * (b - a), t.dy * (b - a)
+            if t.lock_x:                               # a lock takes over its own axis only
+                mx = (p.x - last[0]) * t.mod_x
+            if t.lock_y:
+                my = (p.y - last[1]) * t.mod_y
+            self._move(t.target, mx, my)
+            if done < total or t.forever:
                 running.append((t, done))
         self.moves = tuple(running)
 

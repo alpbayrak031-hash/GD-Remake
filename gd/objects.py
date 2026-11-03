@@ -4,7 +4,9 @@ Hitbox sizes for solids, hazards, saws, slopes, pads, orbs and the 1.x portals a
 taken from camila314/pathfinder's gd-sim (src/Objects/Object.cpp), which lists the
 in-game hitbox of each object in units, before the object's own scale is applied.
 Anything marked ASSUMED below is an ID I know to be that object but whose hitbox
-is not in that table; it borrows the size of its nearest sibling.
+is not in that table; it borrows the size of its nearest sibling.  Where gd-sim's table
+is wrong or has no box offset (it supports none), the entry says so and cites Open-GD/OpenGD's
+table (Source/LongData.cpp) and iArtie/GD-2.2081-Decompiled (GameObject::customSetup).
 
 IDs that are not listed here have no physics mapping and are skipped by the
 importer (and counted in its report).  You can add more without touching code:
@@ -13,7 +15,9 @@ see `load_overrides`.
 import json
 from collections import namedtuple
 
-ObjDef = namedtuple("ObjDef", "kind w h arg note")
+# dx, dy: where the hitbox's centre is relative to the object's, before the object is
+# scaled, flipped and turned (most boxes are centred: 0, 0)
+ObjDef = namedtuple("ObjDef", "kind w h arg note dx dy", defaults=(0.0, 0.0))
 
 SOLID, BREAKABLE, HAZARD, SAW = "solid", "breakable", "hazard", "saw"
 SLOPE, SLOPE_HAZARD = "slope", "slope_hazard"
@@ -38,9 +42,9 @@ def _ids(*spec):
     return out
 
 
-def _add(kind, w, h, ids, arg=None, note=""):
+def _add(kind, w, h, ids, arg=None, note="", dx=0.0, dy=0.0):
     for i in ids:
-        OBJECTS[i] = ObjDef(kind, float(w), float(h), arg, note)
+        OBJECTS[i] = ObjDef(kind, float(w), float(h), arg, note, float(dx), float(dy))
 
 
 # ------------------------------------------------------------------ solids (gd-sim)
@@ -57,7 +61,9 @@ _add(SOLID, 30, 16, _ids(62, 65, 66, 68))
 _add(SOLID, 30, 3, _ids(1202, 1262))
 _add(SOLID, 30, 6, _ids(1220, 1264))
 _add(SOLID, 15, 8, _ids(196, 219, 1911))
-_add(SOLID, 8, 15, _ids(204))
+# gd-sim lists 204 as 8 x 15; it is the invisible twin of the small plank 196 ("invis_plank_01_small"),
+# and OpenGD's table (LongData.cpp {204, {8, 15, ...}} = height 8, width 15) has it 15 wide like 196
+_add(SOLID, 15, 8, _ids(204))
 _add(SOLID, 30, 15, _ids(662, 663, 664))
 _add(SOLID, 30, 10, _ids(1561))
 _add(SOLID, 15, 10, _ids(1567))
@@ -83,11 +89,14 @@ _add(HAZARD, 6, 12, _ids(8, 144, 177, 216))          # the full-size spike
 _add(HAZARD, 4, 7.6, _ids(103, 145, 218))            # medium spike
 _add(HAZARD, 6, 5.6, _ids(39, 205, 217))             # half spike
 _add(HAZARD, 4.5, 5.2, _ids(768, 1727))
-_add(HAZARD, 5.2, 7.2, _ids(447, 1729))
+# These four boxes are not centred: gd-sim has no offsets at all, OpenGD's table gives them, and for
+# 422, 447, 1726 and 1729 the 2.2081 decompilation agrees (iArtie/GD-2.2081-Decompiled
+# GameObject::customSetup: m_customBoxOffset = (-5, 0)).  243/244/1720/1721: OpenGD only.
+_add(HAZARD, 5.2, 7.2, _ids(447, 1729), dx=-5)
 _add(HAZARD, 14.1, 20, _ids(135, 1711))
-_add(HAZARD, 6, 4.4, _ids(422, 1726))
-_add(HAZARD, 6, 6.8, _ids(244, 1721))
-_add(HAZARD, 6, 7.2, _ids(243, 1720))
+_add(HAZARD, 6, 4.4, _ids(422, 1726), dx=-5)
+_add(HAZARD, 6, 6.8, _ids(244, 1721), dx=5)
+_add(HAZARD, 6, 7.2, _ids(243, 1720), dx=-5)
 _add(HAZARD, 9, 5.2, _ids(421, 1725))
 _add(HAZARD, 9, 10.8, _ids(9, 1715))
 _add(HAZARD, 9, 12, _ids(989, 1732))
@@ -120,21 +129,25 @@ for _radius, _saw_ids in (
 
 # ------------------------------------------------------------------ slopes (gd-sim)
 _SLOPES_45 = (289, 294, 299, 305, 309, 315, 321, 326, 331, 337, 343, 349, 353, 371, 483,
-              492, 651, 665, 673, 709, 711, 726, 728, 886, 1338, 1341, 1344, 1723, 1743,
+              492, 651, 665, 673, 709, 711, 726, 728, 886, 1338, 1341, 1344, 1743,
               1745, 1747, 1749, 1906)
-_SLOPES_26 = (291, 295, 301, 307, 311, 317, 323, 327, 333, 339, 345, 351, 355, 367, 372,
-              484, 493, 652, 666, 674, 710, 712, 727, 729, 887, 1339, 1342, 1345, 1724,
+_SLOPES_26 = (291, 295, 301, 307, 311, 317, 323, 327, 333, 339, 345, 351, 355, 372,
+              484, 493, 652, 666, 674, 710, 712, 727, 729, 887, 1339, 1342, 1345,
               1744, 1746, 1748, 1750, 1907)
 _add(SLOPE, 30, 30, _SLOPES_45)
 _add(SLOPE, 60, 30, _SLOPES_26)
-_add(SLOPE_HAZARD, 30, 30, (363, 1717))
-_add(SLOPE_HAZARD, 60, 30, (364, 366, 1718))
+# Spike slopes.  gd-sim has 366 as a 60-wide one and 367, 1723 and 1724 as plain slopes; they are
+# the "pit_04" spike slopes (OpenGD LongData.cpp sprite names), paired like the "pit_01" ones
+# 363/364: 45 degrees 30 x 30, 26 degrees 60 x 30 (OpenGD's _pHitboxes, and the 2.2081
+# decompilation's GameObject::customSetup, which sets m_slopeIsHazard for all eight).
+_add(SLOPE_HAZARD, 30, 30, (363, 366, 1717, 1723))
+_add(SLOPE_HAZARD, 60, 30, (364, 367, 1718, 1724))
 
 # ------------------------------------------------------------------ pads
 _add(PAD, 25, 4, (35,), "yellow")
 _add(PAD, 25, 5, (140,), "pink")
 _add(PAD, 25, 6, (67,), "blue")
-_add(PAD, 25, 6, (1332,), "red", "ASSUMED hitbox (same as blue pad)")
+_add(PAD, 29, 7, (1332,), "red", "hitbox from OpenGD (LongData.cpp)")
 _add(PAD, 25, 6, (3005,), "spider", "ASSUMED hitbox (same as blue pad)")
 
 # ------------------------------------------------------------------ orbs
@@ -168,10 +181,18 @@ _add(PORTAL_SPEED, 33, 56, (201,), 1)
 _add(PORTAL_SPEED, 51, 56, (202,), 2)
 _add(PORTAL_SPEED, 65, 56, (203,), 3)
 _add(PORTAL_SPEED, 69, 56, (1334,), 4)
+# OpenGD's table has 41 x 91 for both; not used yet: with a dual portal wider than the mode
+# portal stacked on it, both icons would take that mode portal, which the dual-mode estimate in
+# gd/sim.py (built on Dear Nostalgists) says they must not - that needs settling first
 _add(PORTAL_DUAL, 34, 86, (286,), True, "ASSUMED hitbox (same as mode portals); dual mode is an ESTIMATE")
 _add(PORTAL_DUAL, 34, 86, (287,), False, "ASSUMED hitbox (same as mode portals); dual mode is an ESTIMATE")
-_add(PORTAL_TELEPORT, 25, 75, (747,), None,
-     "ASSUMED hitbox (same as gravity portals); where it puts the player is an ESTIMATE")
+# OpenGD's table (LongData.cpp, _pHitboxes: {747, {90, 25, -0.5, -45}} = height, width and the
+# box's corner relative to the object): 25 x 90 and NOT centred - it reaches 0.5 units left of
+# the portal's centre and 24.5 to the right.  Levels stack other portals on it and rely on that:
+# Slaughterhouse (ID 27690100) puts a normal-size portal on a teleport at x 1605, and a player
+# coming from the left must meet the size portal first.
+_add(PORTAL_TELEPORT, 25, 90, (747,), None,
+     "hitbox from OpenGD (LongData.cpp); where it puts the player is an ESTIMATE", dx=12.0)
 _add(NOOP, 0, 0, (45, 46), None, "mirror portal: visual only")
 
 # Known gameplay-relevant IDs that are deliberately NOT simulated.  Listing them

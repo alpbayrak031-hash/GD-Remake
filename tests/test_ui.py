@@ -402,6 +402,74 @@ class ClickPlan(unittest.TestCase):
         self.assertIn("Click between frames", inspect.getsource(R.GameView._show_panel))
 
 
+class NoclipInPlay(Temp):
+    """The noclip accuracy setting in the game view: nothing kills, the HUD counts, and the
+    run is not the player's progress."""
+
+    def setUp(self):
+        super().setUp()
+        import tkinter as tk
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest("no display: %s" % exc)
+        self.addCleanup(self.root.destroy)
+        from gd import settings
+        settings.put("noclip", True)
+        self.addCleanup(settings.put, "noclip", False)
+
+    def test_a_noclip_run_finishes_shows_its_accuracy_and_does_not_count(self):
+        from gd.render_tk import GameView
+        from gd.sim import Simulation
+        b = LevelBuilder()
+        b.add(8, 315, 15)                                   # one spike, never jumped
+        b.block(30, 3)
+        progress = Progress(self.save)
+        v = GameView(self.root, Simulation(b.level()), progress=progress, key="k")
+        v.frame.pack(fill="both", expand=True)
+        self.root.update_idletasks()
+        while not v.sim.finished and v.sim.tick < 3000:
+            v._advance()
+        self.assertTrue(v.sim.finished)
+        self.assertEqual(v.sim.noclip_deaths, 1)
+        self.assertLess(v.sim.noclip_accuracy, 100.0)
+        v._draw(0.0)
+        self.assertIn("NOCLIP", v.cv.itemcget(v.it_tag, "text"))
+        texts = [v.cv.itemcget(i, "text") for i in v.cv.find_withtag("panel") if v.cv.type(i) == "text"]
+        self.assertIn("Noclip accuracy", texts)
+        self.assertEqual(progress.get("k"), DEFAULTS, "no attempt, no completion, no play time")
+
+    def test_turning_it_off_starts_a_fresh_attempt_that_can_die(self):
+        from gd import settings
+        from gd.render_tk import GameView
+        from gd.sim import Simulation
+        b = LevelBuilder()
+        b.add(8, 315, 15)
+        v = GameView(self.root, Simulation(b.level()))
+        for _ in range(30):
+            v._advance()
+        v.toggle_noclip()
+        self.assertEqual((v.sim.tick, v.sim.noclip, v.sim.player.noclip), (0, False, False))
+        self.assertIs(settings.get("noclip"), False)
+        while not v.sim.dead and v.sim.tick < 3000:
+            v._advance()
+        self.assertTrue(v.sim.dead)
+
+    def test_never_for_the_bot(self):
+        from gd.macros import InputSequence
+        from gd.render_tk import GameView
+        from gd.sim import Simulation
+        v = GameView(self.root, Simulation(LevelBuilder().level()), inputs=InputSequence([]))
+        self.assertFalse(v.sim.noclip)
+
+    def test_the_setting_is_remembered_and_in_the_pause_menu(self):
+        from gd import settings
+        self.assertIs(settings.DEFAULTS["noclip"], False)
+        import gd.render_tk as R
+        import inspect
+        self.assertIn("Noclip accuracy", inspect.getsource(R.GameView._show_panel))
+
+
 class FpsCounter(unittest.TestCase):
     def feed(self, durations, start=100.0):
         from gd.fps import FrameStats

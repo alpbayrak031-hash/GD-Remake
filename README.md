@@ -246,13 +246,14 @@ In a level:
 | Key | Action |
 |---|---|
 | Space / Up / W / click | jump (hold) |
-| Esc or P | pause menu: resume, restart, practice mode, hitboxes, debug info, FPS counter, decoration, click between frames, exit |
+| Esc or P | pause menu: resume, restart, practice mode, hitboxes, debug info, FPS counter, decoration, click between frames, noclip accuracy, exit |
 | R | restart |
 | Z / X | practice mode: place / remove a checkpoint |
 | H | hitboxes: blue = solid, red = kills, green = safe to touch; the player shows all three of its boxes (see Hitboxes) |
 | O | debug overlay: tick, position, velocity, mode, speed, state flags |
 | F | FPS counter, top right: frames per second over the last second, **1% low** (the average frame rate of the slowest 1% of frames in the last 10 seconds) and **1% high** (the fastest 1%). Also in the pause menu; the game remembers whether it is on |
 | C | **click between frames** (CBF) on/off - see below. Also in the pause menu; remembered |
+| K | **noclip accuracy** on/off: nothing kills you, and the top right shows the percent of physics steps in which nothing would have (and how many times something did); the totals are on the panel at the end. Turning it on or off restarts the attempt, and a noclip run never counts towards your progress. Also in the pause menu; remembered |
 | T, N, - / = | trail, single step, slow down / speed up |
 
 **Click between frames** works the way syzzi's CBF mod for GD 2.2 does

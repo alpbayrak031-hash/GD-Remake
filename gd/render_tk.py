@@ -448,6 +448,8 @@ class GameView(Painter):
         self.show_fps = settings.get("show_fps")      # remembered between levels and sessions
         self.show_deco = settings.get("show_deco")    # decoration (gd/deco_table.py), also remembered
         self.cbf = settings.get("cbf")                # Click Between Frames (see _click_plan), also remembered
+        self.noclip = settings.get("noclip")          # nothing kills you, the HUD shows how cleanly you played
+        sim.set_noclip(self.noclip and inputs is None)        # (never for the bot's replays)
         self._clicks = []                             # CBF: (time, button down) for each change since the last steps
         self.chan = {}                                # colour channels changed by colour triggers so far
         self.colour_fades = {}                        # channel -> (start tick, ticks, from rgb, to rgb, from a, to a)
@@ -838,6 +840,9 @@ class GameView(Painter):
             self.toggle_deco()
         elif k == "c":
             self.toggle_cbf()
+        elif k == "k":
+            self.toggle_noclip()
+            return
         elif k == "t":
             self._toggle("show_trail")
         elif k == "z":
@@ -918,7 +923,8 @@ class GameView(Painter):
         cv.delete("panel")
         self.panel = kind
         left, top = cv.canvasx(0), cv.canvasy(0)
-        pw, ph = 380, (546 if kind == "pause" else 330)
+        noclip_run = kind == "complete" and self.sim.noclip
+        pw, ph = 380, (596 if kind == "pause" else 394 if noclip_run else 330)
         x0, y0 = left + (self.w - pw) / 2.0, top + (self.h - ph) / 2.0
         ui.rounded(cv, x0 - 3, y0 - 3, x0 + pw + 3, y0 + ph + 3, 20, fill="#05070C", outline="", tags="panel")
         ui.rounded(cv, x0, y0, x0 + pw, y0 + ph, 18, fill=ui.PANEL, outline=ui.LINE, tags="panel")
@@ -944,10 +950,15 @@ class GameView(Painter):
             button(5, "FPS counter: %s" % on(self.show_fps), self.toggle_fps, key="F")
             button(6, "Decoration: %s" % on(self.show_deco), self.toggle_deco, key="D")
             button(7, "Click between frames: %s" % on(self.cbf), self.toggle_cbf, key="C")
-            button(8, "Exit level", self.exit, "danger", "Q")
+            button(8, "Noclip accuracy: %s" % on(self.noclip), self.toggle_noclip, key="K",
+                   enabled=self._states is None)
+            button(9, "Exit level", self.exit, "danger", "Q")
         else:
             title = "Practice complete!" if self.practice else "Level complete!"
             lines = [("Time", "%.2f s" % sim.time), ("Attempts", str(self.attempt)), ("Jumps", str(self.jumps))]
+            if noclip_run:
+                title = "Noclip run complete"
+                lines += [("Noclip accuracy", "%.2f%%" % sim.noclip_accuracy), ("Noclip deaths", str(sim.noclip_deaths))]
             if self._states is not None:
                 title = "The bot finished"
                 lines = [("Time", "%.2f s" % sim.time), ("Inputs", str(len(self.replay)))]
@@ -969,6 +980,18 @@ class GameView(Painter):
         self._flash("Click between frames %s" % ("on" if self.cbf else "off"))
         if self.panel == "pause":
             self._show_panel("pause")
+
+    def toggle_noclip(self):
+        """Noclip on or off - from the next attempt, which starts now: an attempt is all noclip
+        or none of it, so its accuracy means something and a noclip run never counts."""
+        if self._states is not None:
+            return
+        self._save_progress()                         # what the attempt so far is owed, under the old setting
+        self.noclip = not self.noclip
+        settings.put("noclip", self.noclip)
+        self.sim.set_noclip(self.noclip)
+        self.restart()
+        self._flash("Noclip %s" % ("on" if self.noclip else "off"))
 
     def toggle_fps(self):
         self.show_fps = not self.show_fps
@@ -1066,7 +1089,7 @@ class GameView(Painter):
             return
         if not self._counted:                         # an attempt starts with its first step
             self._counted = True
-            if self.progress and self.key:
+            if self.progress and self.key and not sim.noclip:
                 self.progress.attempt(self.key)
         if self._states is not None:
             pressed = next(self._states)
@@ -1133,7 +1156,7 @@ class GameView(Painter):
             self._save_progress()
 
     def _on_complete(self):
-        if self.progress and self.key:
+        if self.progress and self.key and not self.sim.noclip:
             self.progress.complete(self.key, self.sim.time, self.practice)
             self._save_progress()
         self.save_recording()
@@ -1141,6 +1164,9 @@ class GameView(Painter):
 
     def _save_progress(self):
         if not (self.progress and self.key):
+            return
+        if self.sim.noclip:                           # a noclip run never counts, its play time and jumps included
+            self.unsaved_ticks, self.jumps_saved = 0, self.jumps
             return
         if self.unsaved_ticks or self.jumps != self.jumps_saved:
             self.progress.add_play(self.key, self.unsaved_ticks / float(C.TPS), self.jumps - self.jumps_saved)
@@ -1357,6 +1383,9 @@ class GameView(Painter):
         cv.itemconfigure(self.it_title, text="%s\nAttempt %d" % (sim.level.name, self.attempt))
         cv.coords(self.it_tag, left + w - 16, top + 12)
         tag = "WATCHING THE BOT" if self._states is not None else ("PRACTICE" if self.practice else "")
+        if sim.noclip:
+            tag += "%sNOCLIP  %.2f%%   %d death%s" % ("   " if tag else "", sim.noclip_accuracy, sim.noclip_deaths,
+                                                    "" if sim.noclip_deaths == 1 else "s")
         if self.rate != 1.0:
             tag += "   x%.3g" % self.rate
         cv.itemconfigure(self.it_tag, text=tag)

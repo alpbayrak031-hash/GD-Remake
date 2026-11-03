@@ -112,6 +112,8 @@ class Player:
         self.rot_x, self.rot_y = 0.0, 15.0    # where the player was at the last rotation update
         self.dead = False
         self.death_cause = ""
+        self.noclip = False                   # a death is only counted (Simulation.noclip_accuracy), not died
+        self.noclip_hit = False               # ... and this says one happened since Simulation last looked
         self.used = frozenset()               # uids of objects already activated (shared by copies: never
                                               # changed in place, only replaced - snapshots stay cheap)
         self.on_pads = frozenset()            # multi-activate pads touched at the last collision check
@@ -193,6 +195,9 @@ class Player:
         return self.y_vel > threshold if self.upside_down else self.y_vel < threshold
 
     def die(self, cause):
+        if self.noclip:
+            self.noclip_hit = True
+            return
         if not self.dead:
             self.dead = True
             self.death_cause = cause

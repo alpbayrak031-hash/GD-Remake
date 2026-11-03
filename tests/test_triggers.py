@@ -98,6 +98,37 @@ class Moves(unittest.TestCase):
         p = run(sim, 240)
         self.assertAlmostEqual(sim.trig.moved[5][0], p.x, delta=2 * p.x_vel)
 
+    # the rest of the lock rules are GJEffectManager::prepareMoveActions / GroupCommandObject2::step
+    def test_a_lock_takes_over_its_own_axis_only(self):
+        sim = build(lambda b: b.add(T.MOVE, 0, 200, k51=5, k58=1, k29=90, k10=1.0), wall_group=5)
+        p = run(sim, 120)
+        dx, dy = sim.trig.moved[5]
+        self.assertAlmostEqual(dx, p.x, delta=2 * p.x_vel)
+        self.assertAlmostEqual(dy, 45.0, places=6, msg="Y still eases to its offset (half way after 0.5 s)")
+        run(sim, 200)
+        self.assertAlmostEqual(sim.trig.moved[5][1], 90.0, places=6)
+
+    def test_a_lock_with_duration_minus_one_never_ends(self):
+        sim = build(lambda b: b.add(T.MOVE, 0, 200, k51=5, k58=1, k10=-1), wall_group=5)
+        p = run(sim, 600)
+        self.assertAlmostEqual(sim.trig.moved[5][0], p.x, delta=2 * p.x_vel)
+        self.assertFalse(p.dead, "the wall stays ahead of the player")
+
+    def test_the_lock_mod_scales_what_is_followed(self):
+        sim = build(lambda b: b.add(T.MOVE, 0, 200, k51=5, k58=1, k143=0.5, k10=-1), wall_group=5)
+        p = run(sim, 120)
+        self.assertAlmostEqual(sim.trig.moved[5][0], p.x / 2.0, delta=p.x_vel)
+
+    def test_lock_to_camera_x_is_lock_to_player_x(self):
+        sim = build(lambda b: b.add(T.MOVE, 0, 200, k51=5, k141=1, k10=-1), wall_group=5)
+        p = run(sim, 120)
+        self.assertAlmostEqual(sim.trig.moved[5][0], p.x, delta=2 * p.x_vel)
+
+    def test_a_silent_move_lands_at_once(self):
+        sim = build(lambda b: b.add(T.MOVE, 0, 200, k51=5, k29=600, k10=3.0, k544=1), wall_group=5)
+        run(sim, 2)
+        self.assertEqual(sim.trig.moved[5], (0.0, 600.0))
+
 
 class Toggles(unittest.TestCase):
     def test_switching_the_wall_off(self):
@@ -205,6 +236,22 @@ class Teleports(unittest.TestCase):
             sim.step(False)
         self.assertAlmostEqual(sim.player.y, 445.0, places=3)
         self.assertLess(sim.player.x, 320)
+
+    def test_the_portal_box_lies_right_of_its_centre(self):
+        # OpenGD's table: 25 x 90, from 0.5 left of the portal's centre to 24.5 right of it
+        o = next(o for o in build(lambda b: b.add(747, 300, 45, k54=400)).level.objects if o.id == 747)
+        self.assertEqual((o.minx, o.maxx, o.miny, o.maxy), (299.5, 324.5, 0.0, 90.0))
+        flipped = next(o for o in build(lambda b: b.add(747, 300, 45, flip_x=True, k54=400)).level.objects if o.id == 747)
+        self.assertEqual((flipped.minx, flipped.maxx), (275.5, 300.5))
+
+    def test_a_portal_stacked_on_it_is_met_first(self):
+        # Slaughterhouse stacks a half-scale normal-size portal on a teleport: coming from the
+        # left, the player must take the size portal before the teleport carries it away
+        sim = build(lambda b: (b.add(99, 300, 15, k128=0.5, k129=0.5), b.add(747, 300, 15, k54=400)))
+        sim.player.set_mini(True)
+        while not any(text == "teleport" for _tick, text in sim.log) and sim.tick < 400:
+            sim.step(False)
+        self.assertFalse(sim.player.mini, [text for _tick, text in sim.log])
 
     def test_the_trigger_sends_the_player_to_its_target(self):
         def extra(b):

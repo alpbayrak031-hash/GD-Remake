@@ -12,6 +12,7 @@ Header keys (gddocs "level start"):
   gddocs "color string"; channel 1000 is the background, 1001 the ground), or before 2.0
   kS29 / kS30 (one such entry each), or before 1.9 kS1-kS3 / kS4-kS6 (red, green, blue).
 """
+import math
 from collections import Counter
 
 from . import objects as O
@@ -251,11 +252,20 @@ class Level:
             ang = (rot + (180.0 if o.flip_y else 0.0)) % 360.0
             o.upside = 90.0 < ang < 270.0
 
+        cx, cy = x, y                      # the hitbox's centre
+        if d.dx or d.dy:
+            # a box off the object's centre (objects.py) is scaled, flipped and turned with it,
+            # as OpenGD's GameObject::objectFromVector applies its _pHitboxes offsets
+            ox = d.dx * sx * (-1.0 if o.flip_x else 1.0)
+            oy = d.dy * sy * (-1.0 if o.flip_y else 1.0)
+            a = math.radians(rot)          # clockwise, like obb_corners
+            cx += ox * math.cos(a) + oy * math.sin(a)
+            cy += oy * math.cos(a) - ox * math.sin(a)
         if quarter:
             if turns % 2:
                 w, h = h, w
         elif d.kind != O.SAW:
-            o.corners = obb_corners(x, y, w, h, rot)
+            o.corners = obb_corners(cx, cy, w, h, rot)
             if d.kind in (O.SOLID, O.BREAKABLE):
                 self.report.assumed["approximate collision: solid at a non-90-degree rotation"] += 1
         o.w, o.h = w, h
@@ -264,8 +274,8 @@ class Level:
             ys = [c[1] for c in o.corners]
             o.minx, o.maxx, o.miny, o.maxy = min(xs), max(xs), min(ys), max(ys)
         else:
-            o.minx, o.maxx = x - w / 2.0, x + w / 2.0
-            o.miny, o.maxy = y - h / 2.0, y + h / 2.0
+            o.minx, o.maxx = cx - w / 2.0, cx + w / 2.0
+            o.miny, o.maxy = cy - h / 2.0, cy + h / 2.0
         return o
 
     def _colour_trigger(self, raw, oid, x):

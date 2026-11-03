@@ -20,6 +20,12 @@ this order:
 The glitch is therefore only ever used when the bot can find no other way, and "no way
 through found" is only said when even that fails.
 
+A grid that finishes the level from one phase but not from the others is no rating -
+yet it is a way through.  The first such route is kept, and when no grid works on every
+phase (or the time runs out first) the result is "route": the bot has a run that
+finishes, only no number for its tightest jump.  Before this, long levels the bot could
+play (Tripwire, BOOBAWAMBA, Denouement) read "no way through found".
+
 search()    one level -> a result dict and the bot's inputs
 measure()   one level -> just the result dict
 Timings     results remembered in savedata/timing.json, per file contents
@@ -43,7 +49,7 @@ from .paths import SAVEDATA
 from .sim import Simulation
 
 DEFAULT_PATH = os.path.join(SAVEDATA, "timing.json")
-VERSION = 8                      # raise it when the method changes: old results are then measured again
+VERSION = 9                      # raise it when the method changes: old results are then measured again
 # input grids tried, coarsest first, in ticks of 1/240 s: 200 ms ... 4 ms (a single physics step)
 CHUNKS = (48, 40, 32, 28, 24, 20, 16, 14, 12, 10, 8, 7, 6, 5, 4, 3, 2, 1)
 MAX_NODES = 150000               # search budget per attempt
@@ -116,6 +122,8 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None, progres
                                                                    only be finished with a held jump
           {"state": "free"}                                        the level needs no input at all
           {"state": "glitch"}                                      only finishable with the gravity-flip grace
+          {"state": "route", "ticks": n, "ms": ms}                 a route finishes, but only from one phase of
+                                                                   an n-tick grid: no rating
           {"state": "unsolved", "reason": "search" | "time"}       the bot found no way through
 
     `wait` is called regularly during the search; it may block or raise Cancelled.
@@ -162,16 +170,24 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None, progres
     def on_solve(text):
         return lambda x, _nodes: report(text, x)
 
+    def found_route():
+        chunk, seq = found["route"]
+        return {"state": "route", "ticks": chunk, "ms": to_ms(chunk)}, seq
+
     tries = on_grid("trying")
     report("starting", 0.0)
     coarse = tuple(c for c in chunks if c > 1)
+    found = {}                                      # rate() keeps the first route that finishes here
     try:
         chunk, seq = rate(level, chunks=coarse, max_nodes=max_nodes, check=check, stall=STALL_STEPS,
-                          progress=tries) if coarse else (None, None)
+                          progress=tries, info=found) if coarse else (None, None)
         if seq is None and 1 in chunks:
             # every moment the physics has: this finds a jump that works on one step only
             fine = max(max_nodes, int(MAX_NODES_FINE * scale))
-            chunk, seq = rate(level, chunks=(1,), max_nodes=fine, check=check, stall=STALL_STEPS, progress=tries)
+            chunk, seq = rate(level, chunks=(1,), max_nodes=fine, check=check, stall=STALL_STEPS, progress=tries,
+                              info=found)
+            if seq is None and "route" in found:
+                return found_route()                # held jumps and the glitch are for levels with no route
             if seq is None:
                 # ... then with held jumps allowed.  First the one question that settles it -
                 # is there any such route, step by step? - so that an impossible level does
@@ -194,8 +210,12 @@ def search(level, wait=None, chunks=CHUNKS, max_nodes=None, budget=None, progres
                 if seq is not None:
                     return {"state": "glitch"}, seq
     except _OutOfTime:
+        if "route" in found:
+            return found_route()
         return {"state": "unsolved", "reason": "time"}, None
     if seq is None:
+        if "route" in found:
+            return found_route()
         return {"state": "unsolved", "reason": "search"}, None
     if not any(down for _tick, down in seq.events):
         return {"state": "free"}, seq
@@ -219,6 +239,8 @@ def describe(result):
         return "no input needed", "easy"
     if state == "glitch":
         return "glitch route only", None
+    if state == "route":
+        return "route found, unrated", None
     if state == "unsolved":
         return "no way through found", None
     return "", None
